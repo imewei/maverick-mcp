@@ -65,7 +65,11 @@ jobs:
 
       - name: Dependency vulnerability audit
         run: |
-          uv export --frozen --no-dev --format requirements-txt -o /tmp/resolved.txt
+          # --no-emit-project: exclude the editable root (-e .) which has no
+          # hash and would trip pip-audit --strict. We only audit third-party
+          # pins, not our own source.
+          uv export --frozen --no-dev --no-emit-project \
+            --format requirements-txt -o /tmp/resolved.txt
           uv tool run pip-audit \
             --strict \
             --requirement /tmp/resolved.txt \
