@@ -11,6 +11,7 @@ Provides detailed health monitoring including:
 
 import asyncio
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any
 import psutil
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from maverick_mcp.config.settings import get_settings
 from maverick_mcp.utils.circuit_breaker import get_circuit_breaker_status
@@ -30,6 +32,14 @@ router = APIRouter(prefix="/health", tags=["Health"])
 
 # Service start time for uptime calculation
 _start_time = time.time()
+
+# Prime a process-scoped CPU sampler. psutil.Process.cpu_percent(None) returns
+# the delta since the previous call; the first call always returns 0.0, so we
+# prime it at import time and discard.
+_proc = psutil.Process(os.getpid())
+_proc.cpu_percent(None)
+# Prime the host-wide sampler as well so subsequent interval=None calls are non-blocking.
+psutil.cpu_percent(interval=None)
 
 
 class ComponentStatus(BaseModel):
@@ -46,7 +56,13 @@ class ComponentStatus(BaseModel):
 class ResourceUsage(BaseModel):
     """System resource usage information."""
 
-    cpu_percent: float = Field(description="CPU usage percentage")
+    cpu_percent: float = Field(
+        description="Host-wide CPU usage percentage (all cores, all processes)"
+    )
+    process_cpu_percent: float = Field(
+        default=0.0,
+        description="This server process's CPU usage percentage (0-100, normalized across cores)",
+    )
     memory_percent: float = Field(description="Memory usage percentage")
     disk_percent: float = Field(description="Disk usage percentage")
     memory_used_mb: float = Field(description="Memory used in MB")
@@ -129,8 +145,13 @@ def _get_uptime_seconds() -> float:
 def _get_resource_usage() -> ResourceUsage:
     """Get current system resource usage."""
     try:
-        # CPU usage
-        cpu_percent = psutil.cpu_percent(interval=1)
+        # Host-wide CPU usage (non-blocking; delta since last call, primed at import).
+        cpu_percent = psutil.cpu_percent(interval=None)
+
+        # Process-scoped CPU, normalized to 0-100 across cores. This is what
+        # monitoring alerts should fire on because it's what this service owns.
+        cpu_count = psutil.cpu_count() or 1
+        process_cpu_percent = _proc.cpu_percent(None) / cpu_count
 
         # Memory usage
         memory = psutil.virtual_memory()
@@ -152,6 +173,7 @@ def _get_resource_usage() -> ResourceUsage:
 
         return ResourceUsage(
             cpu_percent=round(cpu_percent, 2),
+            process_cpu_percent=round(process_cpu_percent, 2),
             memory_percent=round(memory.percent, 2),
             disk_percent=round(disk.percent, 2),
             memory_used_mb=round(memory_used_mb, 2),
@@ -185,7 +207,7 @@ async def _check_database_health() -> ComponentStatus:
         db_session = next(get_db())
         try:
             # Simple query to test connection
-            result = db_session.execute("SELECT 1 as test")
+            result = db_session.execute(text("SELECT 1 as test"))
             test_value = result.scalar()
 
             response_time_ms = (time.time() - start_time) * 1000

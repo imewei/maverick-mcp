@@ -7,6 +7,8 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from maverick_mcp.api.routers._error_handling import tool_error_response
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,8 +51,7 @@ def register_signal_tools(mcp: FastMCP) -> None:
                     "interval_seconds": signal.interval_seconds,
                 }
         except Exception as e:
-            logger.error("create_signal error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("create_signal", e, logger)
 
     @mcp.tool(
         name="update_signal",
@@ -89,11 +90,8 @@ def register_signal_tools(mcp: FastMCP) -> None:
                     "active": signal.active,
                     "interval_seconds": signal.interval_seconds,
                 }
-        except ValueError as e:
-            return {"error": str(e)}
         except Exception as e:
-            logger.error("update_signal error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("update_signal", e, logger)
 
     @mcp.tool(
         name="list_signals",
@@ -124,8 +122,7 @@ def register_signal_tools(mcp: FastMCP) -> None:
                     "count": len(signals),
                 }
         except Exception as e:
-            logger.error("list_signals error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("list_signals", e, logger)
 
     @mcp.tool(
         name="delete_signal",
@@ -143,8 +140,7 @@ def register_signal_tools(mcp: FastMCP) -> None:
                 svc.delete_signal(signal_id)
                 return {"deleted": True, "signal_id": signal_id}
         except Exception as e:
-            logger.error("delete_signal error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("delete_signal", e, logger)
 
     # ------------------------------------------------------------------
     # Manual evaluation
@@ -161,7 +157,9 @@ def register_signal_tools(mcp: FastMCP) -> None:
         """Evaluate all active signals immediately."""
         try:
             import asyncio
+
             import pandas as pd
+
             from maverick_mcp.data.models import SessionLocal
             from maverick_mcp.providers.stock_data import EnhancedStockDataProvider
             from maverick_mcp.services import event_bus
@@ -190,8 +188,7 @@ def register_signal_tools(mcp: FastMCP) -> None:
                     "results": results,
                 }
         except Exception as e:
-            logger.error("check_signals_now error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("check_signals_now", e, logger)
 
     # ------------------------------------------------------------------
     # Market regime
@@ -207,7 +204,6 @@ def register_signal_tools(mcp: FastMCP) -> None:
     def get_market_regime() -> dict:
         """Classify current market regime using SPY data."""
         try:
-            import pandas as pd
             from maverick_mcp.providers.stock_data import EnhancedStockDataProvider
             from maverick_mcp.services.signals.regime import RegimeDetector
 
@@ -220,7 +216,9 @@ def register_signal_tools(mcp: FastMCP) -> None:
             # Normalise column names
             close_col = next(
                 (c for c in spy_data.columns if c.lower() == "close"),
-                spy_data.columns[3] if len(spy_data.columns) > 3 else spy_data.columns[0],
+                spy_data.columns[3]
+                if len(spy_data.columns) > 3
+                else spy_data.columns[0],
             )
             prices = spy_data[close_col].dropna()
 
@@ -230,8 +228,7 @@ def register_signal_tools(mcp: FastMCP) -> None:
             result["note"] = "VIX defaulted to 20 — add VIX data for higher accuracy"
             return result
         except Exception as e:
-            logger.error("get_market_regime error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_market_regime", e, logger)
 
     @mcp.tool(
         name="get_regime_history",
@@ -272,5 +269,4 @@ def register_signal_tools(mcp: FastMCP) -> None:
                     "days": days,
                 }
         except Exception as e:
-            logger.error("get_regime_history error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_regime_history", e, logger)

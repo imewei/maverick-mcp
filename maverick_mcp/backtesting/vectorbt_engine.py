@@ -1,11 +1,14 @@
 """VectorBT backtesting engine implementation with memory management and structured logging."""
 
+import asyncio
 import gc
 import itertools
+import random
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import redis
 import vectorbt as vbt
 from pandas import DataFrame, Series
 
@@ -17,6 +20,7 @@ from maverick_mcp.data.cache import (
 )
 from maverick_mcp.providers.stock_data import EnhancedStockDataProvider
 from maverick_mcp.utils.cache_warmer import CacheWarmer
+from maverick_mcp.utils.circuit_breaker import circuit_breaker
 from maverick_mcp.utils.data_chunking import DataChunker, optimize_dataframe_dtypes
 from maverick_mcp.utils.memory_profiler import (
     check_memory_leak,
@@ -33,6 +37,41 @@ from maverick_mcp.utils.structured_logger import (
 
 logger = get_structured_logger(__name__)
 performance_logger = get_performance_logger("vectorbt_engine")
+
+# Cache backends (Redis + in-memory fallback) degrade gracefully — but only for
+# transient/serialization failures. We intentionally do NOT catch base
+# ``Exception`` here: that would mask programming errors (e.g. a pyarrow
+# schema drift surfacing as ``TypeError``) and defeat the purpose of caching
+# as an optimization rather than a silent data pipeline.
+# ``ValueError`` covers msgpack.ExtraData/UnpackValueError and similar
+# serialization drift without adding a direct msgpack import.
+_CACHE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    redis.RedisError,
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    ValueError,
+)
+
+# Exceptions that ``_fetch_with_retry`` retries AND that the wrapping
+# circuit breaker counts as failures. Kept as a single module-level
+# constant so the decorator's ``expected_exceptions`` and the runtime
+# retry tuple cannot drift — otherwise a sustained upstream failure
+# could be retried per-call but never trip the breaker, defeating the
+# fast-fail guarantee. ``requests.exceptions.RequestException`` is
+# included explicitly: it subclasses ``OSError`` today, but pinning
+# the type protects against future requests/urllib3 reshuffling.
+try:
+    from requests.exceptions import RequestException as _RequestsException
+
+    _RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
+        ConnectionError,
+        TimeoutError,
+        OSError,
+        _RequestsException,
+    )
+except ImportError:
+    _RETRY_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
 
 
 class VectorBTEngine(BatchProcessingMixin):
@@ -65,13 +104,22 @@ class VectorBTEngine(BatchProcessingMixin):
             chunk_size_mb=chunk_size_mb, optimize_chunks=True, auto_gc=True
         )
 
-        # Configure VectorBT settings for optimal performance and memory usage
+        # Configure VectorBT settings for optimal performance and memory usage.
+        # Only catch the two expected failure modes: ``KeyError`` when a
+        # settings subsection is renamed by a vbt upgrade, and
+        # ``AttributeError`` when the top-level ``settings`` shape changes.
+        # The previous ``except (KeyError, Exception)`` swallowed every
+        # programming error (typo on the LHS, import-time init bug, etc.)
+        # and masked them as "Could not configure VectorBT settings." In a
+        # resilience-themed module that's exactly the anti-pattern the rest
+        # of this file is structured to avoid — and ``logger.exception``
+        # preserves the traceback a bare ``{e}`` interpolation would drop.
         try:
             vbt.settings.array_wrapper["freq"] = "D"
             vbt.settings.caching["enabled"] = True  # Enable VectorBT's internal caching
             # Don't set whitelist to avoid cache condition issues
-        except (KeyError, Exception) as e:
-            logger.warning(f"Could not configure VectorBT settings: {e}")
+        except (KeyError, AttributeError):
+            logger.exception("Could not configure VectorBT settings")
 
         logger.info(
             f"VectorBT engine initialized with memory profiling: {enable_memory_profiling}"
@@ -109,8 +157,14 @@ class VectorBTEngine(BatchProcessingMixin):
             interval=interval,
         )
 
-        # Try cache first with improved deserialization
-        cached_data = await self.cache.get(cache_key)
+        # Try cache first — degrade gracefully on transient cache failures.
+        # See ``_CACHE_EXCEPTIONS`` at module level for the catch set.
+        try:
+            cached_data = await self.cache.get(cache_key)
+        except _CACHE_EXCEPTIONS as e:
+            logger.warning(f"Cache read failed for {symbol}, bypassing cache: {e}")
+            cached_data = None
+
         if cached_data is not None:
             if isinstance(cached_data, pd.DataFrame):
                 # Already a DataFrame - ensure timezone-naive
@@ -159,9 +213,88 @@ class VectorBTEngine(BatchProcessingMixin):
         days_old = (datetime.now() - end_dt).days
         ttl = 86400 if days_old > 7 else 3600  # 24h for older data, 1h for recent
 
-        await self.cache.set(cache_key, data, ttl=ttl)
+        # Cache write is best-effort — don't fail the request if cache is down.
+        # Narrowed to transient/serialization errors so real programming bugs
+        # (TypeError/AttributeError from upstream refactors) still surface.
+        try:
+            await self.cache.set(cache_key, data, ttl=ttl)
+        except _CACHE_EXCEPTIONS as e:
+            logger.warning(f"Cache write failed for {symbol}, continuing: {e}")
 
         return data
+
+    @circuit_breaker(
+        name="vectorbt_engine.fetch",
+        failure_threshold=5,
+        recovery_timeout=30,
+        # MUST stay aligned with the retry loop's catch set. If the
+        # retry tuple grows (e.g. a yfinance-specific exception class)
+        # but the breaker's set does not, sustained upstream failures
+        # will be retried per call yet never trip the breaker —
+        # silently defeating the fast-fail guarantee.
+        expected_exceptions=_RETRY_EXCEPTIONS,
+    )
+    async def _fetch_with_retry(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str = "1d",
+        max_retries: int = 3,
+    ) -> DataFrame:
+        """Retry wrapper around get_historical_data for transient network errors.
+
+        Wrapped in a circuit breaker so repeated upstream failures fast-fail
+        instead of incurring retry latency across calls. The retried set is
+        ``_RETRY_EXCEPTIONS`` (module-level), shared with the breaker
+        decorator above so the two cannot drift.
+        """
+        # Exponential backoff + jitter. Jitter prevents a thundering-herd
+        # pattern when a batch of parallel backtests all hit a transient
+        # upstream blip at the same instant and retry in lockstep. Delay is
+        # capped to keep the tail latency bounded even if the caller bumps
+        # ``max_retries`` upward.
+        _BASE_DELAY_S = 0.1
+        _MAX_DELAY_S = 5.0
+
+        # A non-positive retry budget silently returned RuntimeError before;
+        # reject up-front so callers can't accidentally disable the retry path.
+        if max_retries <= 0:
+            raise ValueError(
+                f"max_retries must be a positive integer, got {max_retries}"
+            )
+
+        last_error: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                return await self.get_historical_data(
+                    symbol, start_date, end_date, interval
+                )
+            except _RETRY_EXCEPTIONS as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    base = min(_BASE_DELAY_S * (2**attempt), _MAX_DELAY_S)
+                    # nosec B311 — backoff jitter, not cryptography.
+                    # ``random.uniform`` is the textbook choice here;
+                    # ``secrets`` would add no security value.
+                    delay = base * random.uniform(0.5, 1.5)  # noqa: S311  # nosec B311
+                    logger.warning(
+                        f"get_historical_data attempt {attempt + 1}/{max_retries} "
+                        f"failed for {symbol}: {e}. Retrying in {delay:.2f}s"
+                    )
+                    await asyncio.sleep(delay)
+
+        # Retries exhausted. Log once at error level so the failure is visible
+        # to ops even if the caller suppresses the exception, then re-raise
+        # the last error. ``raise last_error`` preserves its ``__traceback__``.
+        assert last_error is not None  # unreachable when max_retries > 0
+        logger.error(
+            "get_historical_data failed for %s after %d attempts: %s",
+            symbol,
+            max_retries,
+            last_error,
+        )
+        raise last_error
 
     async def _get_data_async(
         self, symbol: str, start_date: str, end_date: str, interval: str
@@ -215,7 +348,7 @@ class VectorBTEngine(BatchProcessingMixin):
         """
         with memory_context("backtest_execution"):
             # Fetch data
-            data = await self.get_historical_data(symbol, start_date, end_date)
+            data = await self._fetch_with_retry(symbol, start_date, end_date)
 
             # Check for large datasets and warn
             data_memory_mb = data.memory_usage(deep=True).sum() / (1024**2)
@@ -978,7 +1111,7 @@ class VectorBTEngine(BatchProcessingMixin):
         """
         with memory_context("parameter_optimization"):
             # Fetch data once
-            data = await self.get_historical_data(symbol, start_date, end_date)
+            data = await self._fetch_with_retry(symbol, start_date, end_date)
 
             # Create parameter combinations as list of dicts
             param_keys = list(param_grid.keys())

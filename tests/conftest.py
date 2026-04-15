@@ -13,6 +13,19 @@ import os
 
 os.environ["MAVERICK_TEST_ENV"] = "true"
 
+# Pre-import beartype to force its claw import-hook modules to register
+# BEFORE pytest-cov (which wraps sys.settrace) starts instrumenting.
+# Without this, running ``pytest --cov`` can crash inside
+# ``beartype.claw._clawimpload`` with ``ImportError: cannot import name
+# 'claw_state' from partially initialized module 'beartype.claw._clawstate'``
+# because coverage's trace handler intercepts mid-initialisation. See
+# pyproject.toml's ``[tool.coverage.run] omit`` for the companion fix.
+try:
+    import beartype.claw._clawimpload  # noqa: F401
+    import beartype.claw._clawstate  # noqa: F401
+except Exception:  # noqa: BLE001 — best-effort pre-import; any failure is non-fatal.
+    pass
+
 import sys
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
@@ -21,8 +34,18 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from testcontainers.postgres import PostgresContainer
-from testcontainers.redis import RedisContainer
+
+# testcontainers is optional — only needed for integration tests that use Docker.
+# Gracefully degrade so unit tests can run without it installed.
+try:
+    from testcontainers.postgres import PostgresContainer
+    from testcontainers.redis import RedisContainer
+
+    _HAS_TESTCONTAINERS = True
+except ImportError:
+    _HAS_TESTCONTAINERS = False
+    PostgresContainer = None  # type: ignore[assignment,misc]
+    RedisContainer = None  # type: ignore[assignment,misc]
 
 # Add the parent directory to the path to enable imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -107,9 +130,11 @@ def pytest_collection_modifyitems(
 def postgres_container():
     """Create a PostgreSQL test container for the test session.
 
-    Skips gracefully when Docker is not available so that non-Docker tests
-    are not blocked.
+    Skips gracefully when Docker or testcontainers is not available so that
+    non-Docker tests are not blocked.
     """
+    if not _HAS_TESTCONTAINERS:
+        pytest.skip("testcontainers package not installed")
     try:
         with PostgresContainer("postgres:15-alpine") as postgres:
             postgres.with_env("POSTGRES_PASSWORD", "test")
@@ -126,9 +151,11 @@ def postgres_container():
 def redis_container():
     """Create a Redis test container for the test session.
 
-    Skips gracefully when Docker is not available so that non-Docker tests
-    are not blocked.
+    Skips gracefully when Docker or testcontainers is not available so that
+    non-Docker tests are not blocked.
     """
+    if not _HAS_TESTCONTAINERS:
+        pytest.skip("testcontainers package not installed")
     try:
         with RedisContainer("redis:7-alpine") as redis:
             yield redis

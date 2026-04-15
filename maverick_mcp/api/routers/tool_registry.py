@@ -19,6 +19,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from maverick_mcp.utils.decision_logger import decision_logger as _decision_logger
+from maverick_mcp.utils.mcp_types import OptionalStrList
 
 logger = logging.getLogger(__name__)
 
@@ -194,9 +195,13 @@ class ToolRateLimiter:
                     continue
                 # Prune stale entries while computing counts
                 if key in self._minute_counts:
-                    self._minute_counts[key] = [t for t in self._minute_counts[key] if now - t < 60]
+                    self._minute_counts[key] = [
+                        t for t in self._minute_counts[key] if now - t < 60
+                    ]
                 if key in self._hour_counts:
-                    self._hour_counts[key] = [t for t in self._hour_counts[key] if now - t < 3600]
+                    self._hour_counts[key] = [
+                        t for t in self._hour_counts[key] if now - t < 3600
+                    ]
                 status[key] = {
                     "calls_this_minute": len(self._minute_counts.get(key, [])),
                     "limit_per_minute": config.max_calls_per_minute,
@@ -629,7 +634,18 @@ def register_agent_tools(mcp: FastMCP) -> None:
                     return {"error": f"Temporary error, please retry: {e}"}
                 raise
 
-        @mcp.tool(name="agents_compare_personas_analysis")
+        @mcp.tool(
+            name="agents_compare_personas_analysis",
+            description=(
+                "Run the same query across multiple investor personas "
+                "(conservative, aggressive, value, growth, day-trader) "
+                "and return side-by-side analyses so the user can see "
+                "how framing changes conclusions. Use when the user asks "
+                "'how would different investors see this'. Returns "
+                "{query, personas: [{persona, analysis, recommendation, "
+                "risk_assessment}]}."
+            ),
+        )
         async def _agents_compare_personas_analysis(
             query: str, session_id: str | None = None
         ) -> dict:
@@ -681,7 +697,19 @@ def register_agent_tools(mcp: FastMCP) -> None:
                     return {"error": f"Temporary error, please retry: {e}"}
                 raise
 
-        @mcp.tool(name="agents_orchestrated_analysis")
+        @mcp.tool(
+            name="agents_orchestrated_analysis",
+            description=(
+                "Multi-agent supervisor pattern: spawns specialist agents "
+                "(technical, macro, sentiment, fundamental), coordinates "
+                "their work, and synthesises a unified recommendation "
+                "with confidence + cost telemetry. Use for 'full "
+                "workup' queries on a single ticker; simpler alternative "
+                "is ``research_comprehensive``. Returns {query, "
+                "synthesis, agent_outputs: [{agent, findings, "
+                "confidence}], cost_tracking, execution_time_s}."
+            ),
+        )
         async def _agents_orchestrated_analysis(
             query: str,
             persona: str = "moderate",
@@ -748,7 +776,7 @@ def register_agent_tools(mcp: FastMCP) -> None:
             research_topic: str,
             persona: str = "moderate",
             research_depth: str = "comprehensive",
-            focus_areas: list[str] | None = None,
+            focus_areas: OptionalStrList = None,
             timeframe: str = "30d",
             session_id: str | None = None,
         ) -> dict:
@@ -808,7 +836,7 @@ def register_agent_tools(mcp: FastMCP) -> None:
         @mcp.tool(name="agents_compare_multi_agent_analysis")
         async def _agents_compare_multi_agent_analysis(
             query: str,
-            agent_types: list[str] | None = None,
+            agent_types: OptionalStrList = None,
             persona: str = "moderate",
             session_id: str | None = None,
         ) -> dict:
@@ -1019,7 +1047,19 @@ def register_research_tools(mcp: FastMCP) -> None:
 
         # Enhanced company research (imported above)
 
-        @mcp.tool(name="research_company_comprehensive")
+        @mcp.tool(
+            name="research_company_comprehensive",
+            description=(
+                "Deep, multi-source research on a single company: "
+                "fundamentals, news, sentiment, competitive position, "
+                "recent catalysts — synthesised into a structured report. "
+                "Heavier than ``research_company`` (broader sources, more "
+                "LLM passes). Adaptive timeout 120-600s depending on "
+                "depth. Returns {symbol, company_overview, "
+                "fundamentals, news_analysis, sentiment, risks, "
+                "investment_thesis, sources: [{url, credibility}]}."
+            ),
+        )
         async def research_company_comprehensive(
             symbol: str,
             include_competitive_analysis: bool = False,
@@ -1208,7 +1248,18 @@ def register_decision_log_tools(mcp: FastMCP) -> None:
     """Register decision audit trail tools directly on main server."""
     from maverick_mcp.utils.decision_logger import decision_logger
 
-    @mcp.tool(name="get_decision_log")
+    @mcp.tool(
+        name="get_decision_log",
+        description=(
+            "Audit trail of agent reasoning steps: every decision the "
+            "orchestrator made, the inputs it considered, the model "
+            "output, and the cost. Use for post-mortems when the user "
+            "asks 'why did the agent pick X' or 'why did this cost so "
+            "much'. Filterable by session_id and time range. Returns "
+            "{entries: [{timestamp, session_id, agent, decision, "
+            "rationale, cost_usd}]}."
+        ),
+    )
     def get_decision_log(
         session_id: str | None = None,
         limit: int = 20,
@@ -1344,13 +1395,17 @@ def register_all_router_tools(mcp: FastMCP) -> None:
 
     try:
         from maverick_mcp.api.routers.signals import register_signal_tools
+
         register_signal_tools(mcp)
         logger.info("Signal tools registered successfully")
     except Exception as e:
         logger.error(f"Failed to register signal tools: {e}")
 
     try:
-        from maverick_mcp.api.routers.screening_pipeline import register_screening_pipeline_tools
+        from maverick_mcp.api.routers.screening_pipeline import (
+            register_screening_pipeline_tools,
+        )
+
         register_screening_pipeline_tools(mcp)
         logger.info("Screening pipeline tools registered successfully")
     except Exception as e:
@@ -1358,6 +1413,7 @@ def register_all_router_tools(mcp: FastMCP) -> None:
 
     try:
         from maverick_mcp.api.routers.journal import register_journal_tools
+
         register_journal_tools(mcp)
         logger.info("Trade journal tools registered successfully")
     except Exception as e:
@@ -1365,13 +1421,17 @@ def register_all_router_tools(mcp: FastMCP) -> None:
 
     try:
         from maverick_mcp.api.routers.watchlist import register_watchlist_tools
+
         register_watchlist_tools(mcp)
         logger.info("Watchlist tools registered successfully")
     except Exception as e:
         logger.error(f"Failed to register watchlist tools: {e}")
 
     try:
-        from maverick_mcp.api.routers.risk_dashboard import register_risk_dashboard_tools
+        from maverick_mcp.api.routers.risk_dashboard import (
+            register_risk_dashboard_tools,
+        )
+
         register_risk_dashboard_tools(mcp)
         logger.info("Risk dashboard tools registered successfully")
     except Exception as e:

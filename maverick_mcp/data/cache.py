@@ -136,7 +136,13 @@ def _decode_json_payload(raw_data: str) -> Any:
 def normalize_timezone(index: pd.Index | Sequence[Any]) -> pd.DatetimeIndex:
     """Return a timezone-naive :class:`~pandas.DatetimeIndex` in UTC."""
 
-    dt_index = index if isinstance(index, pd.DatetimeIndex) else pd.DatetimeIndex(index)
+    if isinstance(index, pd.DatetimeIndex):
+        dt_index = index
+    elif isinstance(index, pd.Index):
+        dt_index = pd.DatetimeIndex(index)
+    else:
+        # pandas-stubs requires SequenceNotStr (rules out raw `str`); wrap in list.
+        dt_index = pd.DatetimeIndex(list(index))
 
     if dt_index.tz is not None:
         dt_index = dt_index.tz_convert("UTC").tz_localize(None)
@@ -1069,8 +1075,17 @@ class CacheManager:
                 deleted_result = client.delete(*keys)
                 deleted_count = cast(int, deleted_result)
                 logger.debug(f"Batch deleted {deleted_count} keys from Redis cache")
-            except Exception as e:
-                logger.warning(f"Error in batch delete from Redis: {e}")
+            except (redis.RedisError, ConnectionError, TimeoutError, OSError) as e:
+                # Narrowed from bare ``Exception``: we want Redis outages /
+                # network blips to degrade to memory-cache delete below, but
+                # caller-induced programming errors (wrong key types, etc.)
+                # should still surface.
+                # nosec B608 — false positive. Bandit's B608 heuristic is a
+                # regex that flags any string containing "delete from",
+                # including this Redis error-log message. There is no SQL
+                # here; the Redis client's ``delete`` method takes keys
+                # directly and the exception text is log output only.
+                logger.warning(f"Error in batch delete from Redis: {e}")  # nosec B608
 
         # Also delete from memory cache
         for key in keys:

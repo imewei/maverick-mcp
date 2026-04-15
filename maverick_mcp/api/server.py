@@ -102,11 +102,14 @@ warnings.filterwarnings(
 
 # ruff: noqa: E402 - Imports after warnings config for proper deprecation warning suppression
 import argparse
+import asyncio as _asyncio
 import json
 import logging
+import os
 import sys
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -155,10 +158,21 @@ from fastmcp.server import http as fastmcp_http
 
 def apply_sse_trailing_slash_patch() -> None:
     """
-    Patch FastMCP's `create_sse_app` so both `/sse` and `/sse/` routes are registered.
+    Patch FastMCP's `create_sse_app` so both `/sse` and `/sse/` routes are
+    registered, and inject the shutdown-gate middleware at the front of the
+    middleware stack.
 
-    This prevents 307 redirects that can cause tool registration failures with mcp-remote.
-    The patch is idempotent and must be applied explicitly (typically when starting SSE).
+    Two fixes in one patch because both require intercepting the same
+    ``create_sse_app`` call:
+
+    * Trailing-slash: prevents 307 redirects that break mcp-remote tool
+      registration.
+    * Shutdown gate: returns 503 for new HTTP requests once
+      ``_shutdown_state["shutting_down"]`` flips, stopping the ASGI
+      double-start RuntimeError seen when POST /messages is in-flight at
+      SIGTERM (see ``maverick_mcp/api/middleware/shutdown_gate.py``).
+
+    Idempotent; must be applied explicitly (typically when starting SSE).
     """
     if (
         getattr(fastmcp_http.create_sse_app, "__name__", "")
@@ -178,7 +192,19 @@ def apply_sse_trailing_slash_patch() -> None:
         routes: list[BaseRoute] | None = None,
         middleware: list[Middleware] | None = None,
     ) -> Any:
-        """Register both path variants for the SSE endpoint."""
+        """Register both path variants for the SSE endpoint and prepend
+        the shutdown-gate middleware."""
+        from maverick_mcp.api.middleware.shutdown_gate import (
+            ShutdownGateMiddleware,
+        )
+
+        # Prepend so the gate runs FIRST (outer-most). The state dict is
+        # the module-level ``_shutdown_state`` defined below; the gate
+        # only reads it.
+        gate = Middleware(ShutdownGateMiddleware, state=_shutdown_state)
+        combined_middleware: list[Middleware] = (
+            [gate, *middleware] if middleware else [gate]
+        )
         app = original_create_sse_app(
             server=server,
             message_path=message_path,
@@ -186,7 +212,7 @@ def apply_sse_trailing_slash_patch() -> None:
             auth=auth,
             debug=debug,
             routes=routes,
-            middleware=middleware,
+            middleware=combined_middleware,
         )
 
         sse_endpoint = None
@@ -267,42 +293,182 @@ from maverick_mcp.config.logging_config import install_secrets_filter
 
 _secrets_filter = install_secrets_filter()
 
+
+# Shutdown flag consulted by readiness probes so load balancers can drain
+# traffic during graceful shutdown. Declared at module scope (rather than
+# inside the fastapi_app branch below) because _server_lifespan references
+# it at shutdown time, and the readiness custom_route handler uses it too.
+_shutdown_state: dict[str, bool] = {"shutting_down": False}
+
+
+# ---------------------------------------------------------------------------
+# ASGI lifespan — manages long-lived background tasks on the server's event loop.
+# This replaces the deprecated @app.on_event("startup") / ("shutdown") pattern.
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def _server_lifespan(app: Any) -> AsyncIterator[None]:
+    """Start and tear down long-lived background tasks.
+
+    The code **before** ``yield`` runs at ASGI startup (on uvicorn's
+    long-lived event loop).  The code **after** ``yield`` runs at ASGI
+    shutdown — so asyncio tasks created here survive the server's entire
+    lifetime.
+    """
+    # ── startup ──────────────────────────────────────────────────────
+    try:
+        from maverick_mcp.services import scheduler as maverick_scheduler
+
+        maverick_scheduler.start()
+        logger.info("Service layer scheduler started on server loop")
+    except Exception as e:
+        logger.error(f"Failed to start service layer scheduler: {e}")
+
+    try:
+        from maverick_mcp.monitoring.health_monitor import start_health_monitoring
+
+        await start_health_monitoring()
+        logger.info("✅ Background health monitoring started on server loop")
+    except Exception as e:
+        logger.error(f"Failed to start health monitoring: {e}")
+
+    yield  # ── server is running ─────────────────────────────────────
+
+    # ── shutdown ─────────────────────────────────────────────────────
+    # Drain window: flip readiness to 503 then sleep long enough for the
+    # load balancer to observe the state change and stop routing new
+    # traffic. 2s is fine for local dev; k8s deployments typically want
+    # terminationGracePeriodSeconds (30s+) minus a safety margin. Operators
+    # override via MAVERICK_SHUTDOWN_DRAIN_SECONDS.
+    _shutdown_state["shutting_down"] = True
+    logger.info("ASGI shutdown event: marking server as not-ready")
+    try:
+        drain_seconds = float(os.getenv("MAVERICK_SHUTDOWN_DRAIN_SECONDS", "2"))
+    except ValueError:
+        drain_seconds = 2.0
+    drain_seconds = max(0.0, drain_seconds)
+    await _asyncio.sleep(drain_seconds)
+    logger.info("ASGI shutdown cleanup complete")
+
+
 # Initialize FastMCP with enhanced connection management
 _fastmcp_instance = FastMCP(
     name=settings.app_name,
+    lifespan=_server_lifespan,
 )
 mcp = cast(FastMCPProtocol, _fastmcp_instance)
 
+
+# Register the structured readiness endpoint via FastMCP's custom_route so it
+# actually answers under streamable-http/SSE transports. (The legacy
+# mcp.fastapi_app.get("/health/ready", ...) below attaches to a FastAPI
+# sub-app that the streamable-http transport does not serve.) Startup
+# scripts and CI smoke tests poll this endpoint instead of grepping logs.
+if hasattr(_fastmcp_instance, "custom_route"):
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    from starlette.requests import Request as _Request
+    from starlette.responses import JSONResponse as _JSONResponse
+
+    @_fastmcp_instance.custom_route("/health/ready", methods=["GET"])
+    async def _health_ready_route(request: _Request) -> _JSONResponse:
+        """Readiness probe served under the MCP HTTP transport.
+
+        Returns 200 once (a) the server isn't draining, (b) the database is
+        reachable, and (c) the tool registry holds at least ``min_tools_floor``
+        entries. Returns 503 otherwise so orchestrators can gate traffic.
+
+        Gating on DB + min-tools mirrors the legacy ``fastapi_app`` handler
+        below; without it, streamable-http deployments would report healthy
+        with a dead database or a half-registered tool surface.
+        """
+        if _shutdown_state["shutting_down"]:
+            return _JSONResponse(
+                content={
+                    "ready": False,
+                    "reason": "server_shutting_down",
+                    "timestamp": _datetime.now(_UTC).isoformat(),
+                },
+                status_code=503,
+            )
+
+        # Lazy import: the health_check module pulls in DB/cache probes and
+        # we don't want to eagerly import it until the transport layer is up.
+        from maverick_mcp.monitoring.health_check import (
+            HealthStatus as _HealthStatus,
+        )
+        from maverick_mcp.monitoring.health_check import (
+            get_health_checker as _get_health_checker,
+        )
+
+        db_status = "unknown"
+        cache_status = "unknown"
+        db_ok = False
+        try:
+            health_result = await _get_health_checker().check_health(
+                ["database", "cache"]
+            )
+            db_component = health_result.components.get("database")
+            if db_component is not None:
+                db_status = db_component.status.value
+                # Readiness is a load-balancer drain signal, not a strict
+                # liveness check. DEGRADED (e.g. replica lag, slow query
+                # threshold) still serves traffic — removing the pod from
+                # the pool on every minor degradation would flap. Strict
+                # liveness lives on the legacy ``/health/ready`` below,
+                # which uses the same predicate today but could diverge.
+                db_ok = db_component.status in (
+                    _HealthStatus.HEALTHY,
+                    _HealthStatus.DEGRADED,
+                )
+            cache_component = health_result.components.get("cache")
+            if cache_component is not None:
+                cache_status = cache_component.status.value
+        except Exception:
+            # A failed health check is itself a readiness signal — fail closed.
+            logger.exception("Readiness health check failed")
+
+        tool_count = 0
+        try:
+            list_tools_fn = getattr(_fastmcp_instance, "list_tools", None)
+            if list_tools_fn is not None:
+                tools = await list_tools_fn()
+                tool_count = len(tools)
+        except Exception:
+            # Use ``logger.exception`` (not warning) — ``list_tools()`` failing
+            # at runtime is a contract bug, not a degradation. The traceback
+            # belongs in Sentry/logs so on-call can diagnose without repro.
+            logger.exception("Failed to enumerate MCP tools")
+
+        # Server-side minimum-tools floor. A partial registration failure
+        # (one router's import blowing up) can leave the process alive with,
+        # say, 3 tools registered — curl against readiness would report 200.
+        # The default is sized just below the actual registered-tool count
+        # (~95 across 11 routers per CLAUDE.md) so losing *any* router drops
+        # us under the floor. The previous default of 50 was loose enough
+        # that nearly half the tool surface could disappear unnoticed.
+        # Operators can override via ``MAVERICK_MIN_READY_TOOLS``; CI smoke
+        # tests pin the exact expected count.
+        min_tools_floor = max(1, int(os.getenv("MAVERICK_MIN_READY_TOOLS", "80")))
+        tools_ok = tool_count >= min_tools_floor
+        ready = db_ok and tools_ok
+        return _JSONResponse(
+            content={
+                "ready": ready,
+                "tools": tool_count,
+                "min_tools": min_tools_floor,
+                "dependencies": {
+                    "database": db_status,
+                    "cache": cache_status,
+                },
+                "timestamp": _datetime.now(_UTC).isoformat(),
+            },
+            status_code=200 if ready else 503,
+        )
+
+
 # Initialize connection manager for stability
 connection_manager: "MCPConnectionManager | None" = None
-
-# TEMPORARILY DISABLED: MCP logging middleware - was breaking SSE transport
-# TODO: Fix middleware to work properly with SSE transport
-# logger.info("Adding comprehensive MCP logging middleware...")
-# try:
-#     from maverick_mcp.api.middleware.mcp_logging import add_mcp_logging_middleware
-#
-#     # Add logging middleware with debug mode based on settings
-#     include_payloads = settings.api.debug or settings.api.log_level.upper() == "DEBUG"
-#     import logging as py_logging
-#     add_mcp_logging_middleware(
-#         mcp,
-#         include_payloads=include_payloads,
-#         max_payload_length=3000,  # Larger payloads in debug mode
-#         log_level=getattr(py_logging, settings.api.log_level.upper())
-#     )
-#     logger.info("✅ MCP logging middleware added successfully")
-#
-#     # Add console notification
-#     print("🔧 MCP Server Enhanced Logging Enabled")
-#     print("   📊 Tool calls will be logged with execution details")
-#     print("   🔍 Protocol messages will be tracked for debugging")
-#     print("   ⏱️  Timeout detection and warnings active")
-#     print()
-#
-# except Exception as e:
-#     logger.warning(f"Failed to add MCP logging middleware: {e}")
-#     print("⚠️  Warning: MCP logging middleware could not be added")
 
 # Initialize monitoring and observability systems
 logger.info("Initializing monitoring and observability systems...")
@@ -343,19 +509,46 @@ logger.info("Initializing enhanced connection management system...")
 # from maverick_mcp.infrastructure.connection_manager import initialize_connection_management
 # from maverick_mcp.infrastructure.sse_optimizer import apply_sse_optimizations
 
-# Register all tools from routers directly for basic functionality
-register_all_router_tools(_fastmcp_instance)
-logger.info("Tools registered successfully")
+# Register all tools from routers directly for basic functionality.
+#
+# Tool-registration is wrapped in a try/except so that a single router's
+# import failure (a stray new dependency, a broken feature flag) degrades
+# the tool surface rather than killing the whole server at boot. The
+# readiness endpoint's ``min_tools`` floor still gates traffic if the
+# surface ends up too thin. A crashing register_all_router_tools call
+# without this guard leaves the caller with no server at all — worse than
+# a degraded one that can report its own incompleteness.
+try:
+    register_all_router_tools(_fastmcp_instance)
+    logger.info("Tools registered successfully")
+except Exception as _tool_reg_err:
+    logger.error(
+        "Tool registration raised — server will boot with a degraded tool "
+        "surface; readiness min_tools gate will reflect this: %s",
+        _tool_reg_err,
+        exc_info=True,
+    )
 
 # Register monitoring and health endpoints directly with FastMCP
 from maverick_mcp.api.routers.health_enhanced import router as health_router
 from maverick_mcp.api.routers.monitoring import router as monitoring_router
 
-# Add monitoring and health endpoints to the FastMCP app's FastAPI instance
+# Add monitoring and health endpoints to the FastMCP app's FastAPI instance.
+# Same degrade-don't-crash posture as tool registration above.
 if hasattr(mcp, "fastapi_app") and mcp.fastapi_app:
-    mcp.fastapi_app.include_router(monitoring_router, tags=["monitoring"])
-    mcp.fastapi_app.include_router(health_router, tags=["health"])
-    logger.info("Monitoring and health endpoints registered with FastAPI application")
+    try:
+        mcp.fastapi_app.include_router(monitoring_router, tags=["monitoring"])
+        mcp.fastapi_app.include_router(health_router, tags=["health"])
+        logger.info(
+            "Monitoring and health endpoints registered with FastAPI application"
+        )
+    except Exception as _router_err:
+        logger.error(
+            "Monitoring/health router registration failed — these endpoints "
+            "will not be served: %s",
+            _router_err,
+            exc_info=True,
+        )
 
     # Register top-level health endpoints for Docker HEALTHCHECK, load balancers,
     # and Kubernetes probes. These use the existing HealthChecker plus circuit
@@ -366,10 +559,6 @@ if hasattr(mcp, "fastapi_app") and mcp.fastapi_app:
     from maverick_mcp.monitoring.health_check import HealthStatus, get_health_checker
 
     _health_checker = get_health_checker()
-
-    # Track whether the server is shutting down so readiness probes can drain traffic.
-    # Use a mutable container so nested functions can update the value without nonlocal.
-    _shutdown_state = {"shutting_down": False}
 
     @mcp.fastapi_app.get("/health", tags=["health"])
     async def docker_health_endpoint(request: Request) -> JSONResponse:
@@ -445,11 +634,26 @@ if hasattr(mcp, "fastapi_app") and mcp.fastapi_app:
                 HealthStatus.DEGRADED,
             )
 
-            ready = db_ok
+            # Structured tool-registration signal: count of registered MCP tools.
+            # Startup scripts and CI smoke tests poll this instead of grepping logs,
+            # which is brittle to log-message renames. FastMCP exposes list_tools()
+            # but FastMCPProtocol does not, so access via getattr.
+            tool_count = 0
+            try:
+                list_tools_fn = getattr(mcp, "list_tools", None)
+                if list_tools_fn is not None:
+                    tools = await list_tools_fn()
+                    tool_count = len(tools)
+            except Exception:
+                # Contract bug, not degradation — capture the traceback.
+                logger.exception("Failed to enumerate MCP tools")
+
+            ready = db_ok and tool_count > 0
             status_code = 200 if ready else 503
             return JSONResponse(
                 content={
                     "ready": ready,
+                    "tools": tool_count,
                     "dependencies": {
                         "database": db_component.status.value
                         if db_component
@@ -491,35 +695,8 @@ if hasattr(mcp, "fastapi_app") and mcp.fastapi_app:
             status_code=200,
         )
 
-    # Start the service layer scheduler on the server's long-lived event loop
-    @mcp.fastapi_app.on_event("startup")
-    async def on_fastapi_startup() -> None:
-        """Start the scheduler on the ASGI server's event loop."""
-        try:
-            from maverick_mcp.services import scheduler as maverick_scheduler
-            maverick_scheduler.start()
-            logger.info("Service layer scheduler started on server loop")
-        except Exception as e:
-            logger.error(f"Failed to start service layer scheduler: {e}")
-
-    # Register a FastAPI shutdown event to coordinate graceful shutdown
-    # with the lifespan of the ASGI application managed by uvicorn.
-    @mcp.fastapi_app.on_event("shutdown")
-    async def on_fastapi_shutdown() -> None:
-        """Run cleanup when the ASGI application is shutting down."""
-        import asyncio as _asyncio
-
-        _shutdown_state["shutting_down"] = True
-        logger.info("ASGI shutdown event: marking server as not-ready")
-
-        # Give in-flight requests a brief window to complete
-        await _asyncio.sleep(2)
-
-        # NOTE: Database and Redis cleanup is handled by the registered
-        # shutdown_handler callbacks (cleanup_database, close_cache) below.
-        # Only mark shutdown state and drain here to avoid double-dispose.
-
-        logger.info("ASGI shutdown cleanup complete")
+    # NOTE: Startup/shutdown logic is handled by _server_lifespan passed to
+    # FastMCP(lifespan=...) — no on_event handlers needed.
 
     logger.info("Health endpoints registered at /health, /health/ready, /health/live")
 
@@ -594,22 +771,7 @@ def health_resource() -> str:
 
         from maverick_mcp.api.routers.health_enhanced import _get_detailed_health_status
 
-        loop_policy = asyncio.get_event_loop_policy()
-        try:
-            previous_loop = loop_policy.get_event_loop()
-        except RuntimeError:
-            previous_loop = None
-
-        loop = loop_policy.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            health_status = loop.run_until_complete(_get_detailed_health_status())
-        finally:
-            loop.close()
-            if previous_loop is not None:
-                asyncio.set_event_loop(previous_loop)
-            else:
-                asyncio.set_event_loop(None)
+        health_status = asyncio.run(_get_detailed_health_status())
 
         # Add service-specific information
         health_status.update(
@@ -655,23 +817,7 @@ def status_dashboard_resource() -> str:
 
         from maverick_mcp.monitoring.status_dashboard import get_dashboard_data
 
-        loop_policy = asyncio.get_event_loop_policy()
-        try:
-            previous_loop = loop_policy.get_event_loop()
-        except RuntimeError:
-            previous_loop = None
-
-        loop = loop_policy.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            dashboard_data = loop.run_until_complete(get_dashboard_data())
-        finally:
-            loop.close()
-            if previous_loop is not None:
-                asyncio.set_event_loop(previous_loop)
-            else:
-                asyncio.set_event_loop(None)
-
+        dashboard_data = asyncio.run(get_dashboard_data())
         return json.dumps(dashboard_data, default=str)
 
     except Exception as e:
@@ -811,7 +957,15 @@ async def get_user_portfolio_summary() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Sample hand-curated watchlist with live quotes. Distinct from "
+        "``watchlist_brief`` / the user's personal watchlists — this is "
+        "the built-in demo basket. Use when the user asks 'what's on the "
+        "watchlist' with no named list. Returns {count, stocks: [{symbol, "
+        "price, change, change_pct, volume}]}."
+    )
+)
 async def get_watchlist(limit: int = 20) -> dict[str, Any]:
     """
     Get sample watchlist with real-time stock data.
@@ -939,7 +1093,15 @@ async def get_market_overview() -> dict[str, Any]:
         return {"error": str(e), "status": "error"}
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Upcoming US economic events (CPI, NFP, FOMC, etc.) over the "
+        "next N days with consensus vs. prior. Use for macro-aware "
+        "trade planning — NOT for earnings (see "
+        "``get_upcoming_catalysts`` for company-level catalysts). "
+        "Returns {events: [{date, event, consensus, prior, importance}]}."
+    )
+)
 async def get_economic_calendar(days_ahead: int = 7) -> dict[str, Any]:
     """
     Get upcoming economic events and indicators.
@@ -1023,7 +1185,16 @@ async def get_mcp_connection_status() -> dict[str, Any]:
 # --- Phase 1: Core Analysis & Screening ---
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Relative Strength Index analysis: current RSI, overbought/"
+        "oversold signal, divergence detection, and recent peaks/"
+        "troughs. Use when the user asks about RSI specifically — for "
+        "MACD use ``get_macd_analysis`` and for a full indicator battery "
+        "use ``get_full_technical_analysis``. Returns {ticker, current_rsi, "
+        "signal: 'overbought'|'oversold'|'neutral', divergence, recent}."
+    )
+)
 async def get_rsi_analysis(
     ticker: str, period: int = 14, days: int = 365
 ) -> dict[str, Any]:
@@ -1039,7 +1210,16 @@ async def get_rsi_analysis(
     return await _fn(ticker, period, days)
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Moving Average Convergence Divergence analysis: MACD line, "
+        "signal line, histogram, crossover events, and divergence "
+        "against price. Use for trend-change hypotheses — complements "
+        "``get_rsi_analysis`` (momentum) and ``get_support_resistance`` "
+        "(structure). Returns {ticker, macd, signal, histogram, "
+        "crossover: 'bullish'|'bearish'|None, divergence}."
+    )
+)
 async def get_macd_analysis(
     ticker: str,
     fast_period: int = 12,
@@ -1061,7 +1241,16 @@ async def get_macd_analysis(
     return await _fn(ticker, fast_period, slow_period, signal_period, days)
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Algorithmically-detected support and resistance price levels "
+        "with strength scores and recent touches. Use for entry/exit "
+        "planning and stop-loss placement; does NOT predict direction "
+        "(use RSI/MACD for that). Returns {ticker, levels: [{price, "
+        "type: 'support'|'resistance', strength, recent_touches}], "
+        "nearest_support, nearest_resistance}."
+    )
+)
 async def get_support_resistance(ticker: str, days: int = 365) -> dict[str, Any]:
     """Get key support and resistance price levels.
 
@@ -1074,7 +1263,16 @@ async def get_support_resistance(ticker: str, days: int = 365) -> dict[str, Any]
     return await _fn(ticker, days)
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Pre-computed bullish-momentum screen from the seeded S&P 500 "
+        "database. Use for 'what's showing strong momentum right now'; "
+        "see ``get_maverick_bear_recommendations`` for the short-side "
+        "equivalent and ``get_trending_breakout_recommendations`` for "
+        "breakout patterns. Returns {stocks: [{symbol, combined_score, "
+        "momentum_score, pattern, squeeze_status}], as_of_date}."
+    )
+)
 async def get_maverick_stocks(limit: int = 20) -> dict[str, Any]:
     """Screen S&P 500 for bullish momentum setups.
 
@@ -1145,7 +1343,16 @@ async def get_maverick_bear_stocks(limit: int = 20) -> dict[str, Any]:
     return await asyncio.to_thread(_fn, limit)
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Pre-computed screen for stocks in confirmed accumulation/"
+        "breakout phases (Stan Weinstein stage-2-like patterns) from the "
+        "seeded S&P 500 universe. Use for trend-following / breakout "
+        "trade ideas; distinct from ``get_maverick_stocks`` which ranks "
+        "by general momentum. Returns {stocks: [{symbol, breakout_type, "
+        "stage, volume_confirmation}], as_of_date}."
+    )
+)
 async def get_supply_demand_breakouts(
     limit: int = 20, filter_moving_averages: bool = False
 ) -> dict[str, Any]:
@@ -1213,7 +1420,16 @@ async def add_portfolio_position(
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Remove some or all shares of a ticker from the persisted "
+        "portfolio (cost-basis-tracked). Pass ``shares`` to sell a "
+        "partial lot; omit to close the position entirely. Use "
+        "``portfolio_clear_portfolio`` to wipe the whole portfolio. "
+        "Returns {status, removed: {ticker, shares, remaining_shares, "
+        "realized_pnl}}."
+    )
+)
 async def remove_portfolio_position(
     ticker: str, shares: float | None = None
 ) -> dict[str, Any]:
@@ -1236,7 +1452,16 @@ async def remove_portfolio_position(
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Pearson correlation matrix across the user's current portfolio "
+        "holdings — auto-pulled from the persisted positions, no ticker "
+        "list required. Use for diversification checks ('am I all in "
+        "one factor?'). For ad-hoc baskets use ``compare_tickers``. "
+        "Returns {tickers, correlation_matrix, highly_correlated_pairs: "
+        "[{ticker_a, ticker_b, r}], mean_correlation}."
+    )
+)
 async def portfolio_correlation_analysis(days: int = 252) -> dict[str, Any]:
     """Analyze correlation between all portfolio holdings.
 
@@ -1260,7 +1485,16 @@ async def portfolio_correlation_analysis(days: int = 252) -> dict[str, Any]:
     )
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Side-by-side comparison of 2+ tickers on technicals and returns "
+        "over a chosen window. If ``tickers`` is None, falls back to "
+        "the user's portfolio so the LLM can answer 'compare my "
+        "holdings'. For pure correlation use "
+        "``portfolio_correlation_analysis``. Returns {period, tickers, "
+        "comparison: {ticker: {return_pct, rsi, trend, volatility, ...}}}."
+    )
+)
 async def compare_tickers(
     tickers: list[str] | None = None, days: int = 90
 ) -> dict[str, Any]:
@@ -1345,7 +1579,16 @@ async def get_stock_info(ticker: str) -> dict[str, Any]:
     return await asyncio.to_thread(_fn, ticker)
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "News sentiment roll-up for a ticker over a recent window: "
+        "bullish/bearish/neutral share, top headlines, article count. "
+        "For free-text research use ``research_company`` / "
+        "``research_comprehensive``; this is a fast numeric snapshot "
+        "suitable for dashboards. Returns {ticker, period_days, sentiment: "
+        "{score, bullish_pct, bearish_pct, neutral_pct}, top_articles}."
+    )
+)
 async def get_news_sentiment(
     ticker: str, timeframe: str = "7d", limit: int = 10
 ) -> dict[str, Any]:
@@ -1520,19 +1763,9 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Failed to initialize performance systems: {e}")
 
-        # Initialize background health monitoring
-        logger.info("Starting background health monitoring...")
-        try:
-            from maverick_mcp.monitoring.health_monitor import start_health_monitoring
-
-            await start_health_monitoring()
-            logger.info("✅ Background health monitoring started")
-        except Exception as e:
-            logger.error(f"Failed to start health monitoring: {e}")
-
-        # NOTE: Scheduler start is deferred to the ASGI startup event
-        # (on_fastapi_startup below) so it binds to the long-lived server
-        # loop, not this transient asyncio.run() loop.
+        # NOTE: Both the scheduler and health monitoring are deferred to the
+        # ASGI startup event (on_fastapi_startup) so they bind to the
+        # long-lived server loop, not this transient asyncio.run() loop.
 
         # Register domain services and wire cross-domain events
         try:
@@ -1544,20 +1777,32 @@ if __name__ == "__main__":
             _reg.register("regime_detector", RegimeDetector())
 
             async def on_signal_for_risk(topic, data):
-                logger.debug("Risk: signal event for %s", data.get("ticker") if data else "unknown")
+                logger.debug(
+                    "Risk: signal event for %s",
+                    data.get("ticker") if data else "unknown",
+                )
 
             async def on_screening_change(topic, data):
-                logger.debug("Screening change: %s %s", data.get("change_type", "") if data else "", data.get("symbol", "") if data else "")
+                logger.debug(
+                    "Screening change: %s %s",
+                    data.get("change_type", "") if data else "",
+                    data.get("symbol", "") if data else "",
+                )
 
             async def on_regime_change(topic, data):
-                logger.info("Regime changed: %s (confidence: %s)",
-                    data.get("regime") if data else "unknown", data.get("confidence") if data else "unknown")
+                logger.info(
+                    "Regime changed: %s (confidence: %s)",
+                    data.get("regime") if data else "unknown",
+                    data.get("confidence") if data else "unknown",
+                )
 
             _eb.subscribe("signal.triggered", on_signal_for_risk)
             _eb.subscribe("screening.entry", on_screening_change)
             _eb.subscribe("screening.exit", on_screening_change)
             _eb.subscribe("regime.changed", on_regime_change)
-            logger.info("Service layer: domain services registered, event wiring complete")
+            logger.info(
+                "Service layer: domain services registered, event wiring complete"
+            )
         except Exception as e:
             logger.error(f"Failed to wire domain services: {e}")
 
@@ -1630,12 +1875,11 @@ if __name__ == "__main__":
 
     logger.info(f"Starting {settings.app_name} simple stock analysis server")
 
-    # Add initialization delay for connection stability
-    import time
-
-    logger.info("Adding startup delay for connection stability...")
-    time.sleep(3)  # 3 second delay to ensure full initialization
-    logger.info("Startup delay completed, server ready for connections")
+    # Note: a 3-second `time.sleep` used to sit here "for connection stability".
+    # It was removed because tool registration and service-layer wiring both log
+    # completion before this point, and the sync sleep blocked uvicorn's port
+    # bind, causing flaky readiness detection in dev.sh. Readiness is now
+    # reported structurally via GET /health/ready (tools count + dependencies).
 
     # Use graceful shutdown handler
     with graceful_shutdown(f"{settings.app_name}-{args.transport}") as shutdown_handler:
@@ -1710,6 +1954,7 @@ if __name__ == "__main__":
             """Shutdown service layer scheduler."""
             try:
                 from maverick_mcp.services import scheduler as maverick_scheduler
+
                 maverick_scheduler.shutdown()
                 logger.info("Service layer scheduler stopped")
             except Exception as e:

@@ -1,7 +1,7 @@
 # Maverick-MCP Makefile
 # Central command interface for agent-friendly development
 
-.PHONY: help dev dev-sse dev-http dev-stdio stop test test-all test-watch test-specific test-parallel test-cov test-speed test-speed-quick test-speed-emergency test-speed-comparison test-strategies lint format typecheck clean tail-log backend check migrate setup redis-start redis-stop experiment experiment-once benchmark-parallel benchmark-speed docker-up docker-down docker-logs
+.PHONY: help dev dev-sse dev-http dev-stdio stop test test-all test-watch test-specific test-parallel test-cov test-speed test-speed-quick test-speed-emergency test-speed-comparison test-strategies test-smoke lint format typecheck clean tail-log backend check migrate setup redis-start redis-stop experiment experiment-once benchmark-parallel benchmark-speed docker-up docker-down docker-logs
 
 # Default target
 help:
@@ -80,6 +80,10 @@ test-all:
 	@echo "Running all tests (including integration)..."
 	@uv run pytest -v -m ""
 
+test-smoke:
+	@echo "Running dev.sh readiness smoke test..."
+	@./scripts/smoke_test_dev.sh
+
 test-watch:
 	@echo "Starting test watcher..."
 	@if ! uv pip show pytest-watch > /dev/null 2>&1; then \
@@ -105,8 +109,14 @@ test-parallel:
 	@uv run pytest -v -n auto
 
 test-cov:
-	@echo "Running tests with coverage..."
-	@uv run pytest --cov=maverick_mcp --cov-report=html --cov-report=term
+	@echo "Running tests with coverage (sysmon core; see pyproject.toml)..."
+	# COVERAGE_CORE=sysmon uses Python 3.12+'s PEP 669 monitoring instead of
+	# sys.settrace, which sidesteps a circular-import collision between
+	# coverage.py's trace hook and beartype's import-claw. Without this the
+	# run crashes inside beartype.claw._clawimpload trying to import
+	# _clawstate mid-initialisation. sysmon is also 2-5x faster. Requires
+	# coverage >= 7.4 (already in our lockfile).
+	@COVERAGE_CORE=sysmon uv run pytest --cov=maverick_mcp --cov-report=html --cov-report=term
 
 test-fixes:
 	@echo "Running MCP tool fixes validation..."
@@ -151,7 +161,31 @@ typecheck:
 	@echo "Running type checker..."
 	@uv run --extra dev pyright
 
-check: lint typecheck
+check-mcp-types:
+	@echo "Checking MCP tool list[str] parameters use coercion aliases..."
+	@uv run python scripts/check_mcp_list_types.py
+
+check-otel-versions:
+	@echo "Checking OpenTelemetry package versions are aligned in uv.lock..."
+	@uv run --no-sync python scripts/check_otel_versions.py
+
+# check-mcp-descriptions is now --strict: Phase 2.1 of the audit
+# roadmap cleared the backlog, so new tools must ship with a
+# description= kwarg or a >=8-word docstring first line. Adding an
+# undocumented @mcp.tool will fail `make check`.
+check-mcp-descriptions:
+	@echo "Checking MCP @mcp.tool decorators have useful description= ..."
+	@uv run python scripts/check_mcp_descriptions.py --strict
+
+# check-router-variants stays warning-only until Phase 3 consolidation
+# lands — removing --strict prematurely would fail CI on every commit
+# while the four known variant groups still exist. See
+# docs/audit/follow-ups.md items 3.1–3.4.
+check-router-variants:
+	@echo "Checking router-variant sprawl (_enhanced/_parallel/_ddd/_pipeline)..."
+	@uv run python scripts/check_router_variants.py
+
+check: lint typecheck check-mcp-types check-otel-versions check-mcp-descriptions check-router-variants
 	@echo "All checks passed!"
 
 # Utility commands

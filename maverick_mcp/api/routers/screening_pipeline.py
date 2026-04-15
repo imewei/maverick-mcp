@@ -6,6 +6,8 @@ import logging
 
 from fastmcp import FastMCP
 
+from maverick_mcp.api.routers._error_handling import tool_error_response
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,9 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
         try:
             from maverick_mcp.data.models import SessionLocal
             from maverick_mcp.services import event_bus
-            from maverick_mcp.services.screening.pipeline import ScreeningPipelineService
+            from maverick_mcp.services.screening.pipeline import (
+                ScreeningPipelineService,
+            )
 
             with SessionLocal() as session:
                 svc = ScreeningPipelineService(db_session=session, event_bus=event_bus)
@@ -43,7 +47,9 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
                             "screen_name": c.screen_name,
                             "previous_rank": c.previous_rank,
                             "new_rank": c.new_rank,
-                            "detected_at": c.detected_at.isoformat() if c.detected_at else None,
+                            "detected_at": c.detected_at.isoformat()
+                            if c.detected_at
+                            else None,
                         }
                         for c in changes
                     ],
@@ -51,8 +57,7 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
                     "screen_name": screen_name,
                 }
         except Exception as e:
-            logger.error("get_screening_changes error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_screening_changes", e, logger)
 
     @mcp.tool(
         name="get_screening_history",
@@ -69,7 +74,9 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
         try:
             from maverick_mcp.data.models import SessionLocal
             from maverick_mcp.services import event_bus
-            from maverick_mcp.services.screening.pipeline import ScreeningPipelineService
+            from maverick_mcp.services.screening.pipeline import (
+                ScreeningPipelineService,
+            )
 
             with SessionLocal() as session:
                 svc = ScreeningPipelineService(db_session=session, event_bus=event_bus)
@@ -81,8 +88,7 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
                     "appearances": len(history),
                 }
         except Exception as e:
-            logger.error("get_screening_history error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_screening_history", e, logger)
 
     @mcp.tool(
         name="schedule_screening",
@@ -137,8 +143,7 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
                     ),
                 }
         except Exception as e:
-            logger.error("schedule_screening error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("schedule_screening", e, logger)
 
     @mcp.tool(
         name="get_screening_pipeline_status",
@@ -152,11 +157,12 @@ def register_screening_pipeline_tools(mcp: FastMCP) -> None:
         try:
             from maverick_mcp.data.models import SessionLocal
             from maverick_mcp.services import event_bus
-            from maverick_mcp.services.screening.pipeline import ScreeningPipelineService
+            from maverick_mcp.services.screening.pipeline import (
+                ScreeningPipelineService,
+            )
 
             with SessionLocal() as session:
                 svc = ScreeningPipelineService(db_session=session, event_bus=event_bus)
                 return svc.get_pipeline_status()
         except Exception as e:
-            logger.error("get_screening_pipeline_status error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_screening_pipeline_status", e, logger)

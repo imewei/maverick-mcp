@@ -46,6 +46,11 @@ from maverick_mcp.database.base import Base
 logger = logging.getLogger("maverick_mcp.data.models")
 settings = get_settings()
 
+# NYSE trading-calendar anchor. Shared across provider + data layers so a
+# future calendar change (LSE, TSE) is a one-file refactor. See the
+# stale-data audit for context: docs/audit/2026-04-14-mcp-audit-roadmap.md.
+from maverick_mcp.utils.timezones import US_EASTERN as _US_EASTERN  # noqa: E402
+
 
 # Helper function to get the right integer type for autoincrement primary keys
 def get_primary_key_type():
@@ -457,7 +462,9 @@ class PriceCache(Base, TimestampMixin):
             DataFrame with OHLCV data indexed by date
         """
         if not end_date:
-            end_date = datetime.now(UTC).strftime("%Y-%m-%d")
+            # Anchor "today" to US/Eastern so we don't roll forward into
+            # a UTC-future date that the NYSE calendar will then reject.
+            end_date = datetime.now(_US_EASTERN).strftime("%Y-%m-%d")
 
         # Query with join to get ticker symbol
         query = (
@@ -1498,15 +1505,27 @@ def bulk_insert_price_data(
     session: Session, ticker_symbol: str, df: pd.DataFrame
 ) -> int:
     """
-    Bulk insert price data from a DataFrame.
+    Upsert price data from a DataFrame into PriceCache.
+
+    Prior implementations used ``INSERT ... ON CONFLICT DO NOTHING`` /
+    ``INSERT OR IGNORE``, which made any row already present on ``(stock_id,
+    date)`` permanently immutable. That caused a "days-old data" class of
+    bugs: a provisional bar written mid-session (yfinance returns partial
+    EOD before close) stuck forever even after the final EOD landed.
+
+    This implementation upserts on the ``(stock_id, date)`` unique
+    constraint, overwriting OHLCV + ``updated_at``. ``created_at`` is
+    preserved by the DB default on first insert and not touched on update.
 
     Args:
-        session: Database session
-        ticker_symbol: Stock ticker symbol
-        df: DataFrame with OHLCV data (must have date index)
+        session: Database session.
+        ticker_symbol: Stock ticker symbol.
+        df: DataFrame with OHLCV data (must have date index).
 
     Returns:
-        Number of records inserted (or would be inserted)
+        Number of rows the database reports as affected by the upsert
+        (semantics vary across backends; treat as a diagnostic, not a
+        precise "new rows" count).
     """
     if df.empty:
         return 0
@@ -1514,21 +1533,7 @@ def bulk_insert_price_data(
     # Get or create stock
     stock = Stock.get_or_create(session, ticker_symbol)
 
-    # First, check how many records already exist
-    existing_dates = set()
-    if hasattr(df.index[0], "date"):
-        dates_to_check = [d.date() for d in df.index]
-    else:
-        dates_to_check = list(df.index)
-
-    existing_query = session.query(PriceCache.date).filter(
-        PriceCache.stock_id == stock.stock_id, PriceCache.date.in_(dates_to_check)
-    )
-    existing_dates = {row[0] for row in existing_query.all()}
-
-    # Prepare data for bulk insert
     records = []
-    new_count = 0
     for date_idx, row in df.iterrows():
         # Handle different index types - datetime index vs date index
         if hasattr(date_idx, "date") and callable(date_idx.date):
@@ -1536,14 +1541,7 @@ def bulk_insert_price_data(
         elif hasattr(date_idx, "to_pydatetime") and callable(date_idx.to_pydatetime):
             date_val = date_idx.to_pydatetime().date()  # type: ignore[attr-defined]
         else:
-            # Assume it's already a date-like object
             date_val = date_idx
-
-        # Skip if already exists
-        if date_val in existing_dates:
-            continue
-
-        new_count += 1
 
         # Handle both lowercase and capitalized column names from yfinance
         open_val = row.get("open", row.get("Open", 0))
@@ -1552,10 +1550,10 @@ def bulk_insert_price_data(
         close_val = row.get("close", row.get("Close", 0))
         volume_val = row.get("volume", row.get("Volume", 0))
 
-        # Handle None values
         if volume_val is None:
             volume_val = 0
 
+        now_utc = datetime.now(UTC)
         records.append(
             {
                 "stock_id": stock.stock_id,
@@ -1565,42 +1563,85 @@ def bulk_insert_price_data(
                 "low_price": Decimal(str(low_val)),
                 "close_price": Decimal(str(close_val)),
                 "volume": int(volume_val),
-                "created_at": datetime.now(UTC),
-                "updated_at": datetime.now(UTC),
+                "created_at": now_utc,
+                "updated_at": now_utc,
             }
         )
 
-    # Only insert if there are new records
-    if records:
-        # Use database-specific upsert logic
-        if "postgresql" in DATABASE_URL:
-            from sqlalchemy.dialects.postgresql import insert
+    if not records:
+        return 0
 
-            stmt = insert(PriceCache).values(records)
-            stmt = stmt.on_conflict_do_nothing(index_elements=["stock_id", "date"])
-        else:
-            # For SQLite, use INSERT OR IGNORE
-            from sqlalchemy import insert
+    update_set_keys = (
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "volume",
+        "updated_at",
+    )
 
-            stmt = insert(PriceCache).values(records)
-            # SQLite doesn't support on_conflict_do_nothing, use INSERT OR IGNORE
-            stmt = stmt.prefix_with("OR IGNORE")
+    if "postgresql" in DATABASE_URL:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+        stmt = pg_insert(PriceCache).values(records)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["stock_id", "date"],
+            set_={key: getattr(stmt.excluded, key) for key in update_set_keys},
+        )
+    elif "sqlite" in DATABASE_URL:
+        # SQLite 3.24+ supports ON CONFLICT DO UPDATE via the sqlite dialect.
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        stmt = sqlite_insert(PriceCache).values(records)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["stock_id", "date"],
+            set_={key: getattr(stmt.excluded, key) for key in update_set_keys},
+        )
+    else:
+        # Fail loudly for unsupported backends. Previously any non-postgres
+        # URL silently received a SQLite-dialect statement, which produced a
+        # confusing "dialect mismatch" error at execute-time instead of a
+        # clear "this backend isn't supported" error at dispatch-time.
+        backend = DATABASE_URL.split(":", 1)[0] if DATABASE_URL else "unknown"
+        raise NotImplementedError(
+            f"bulk_insert_price_data upsert not implemented for backend "
+            f"'{backend}' (only postgresql and sqlite are supported)"
+        )
+
+    # Commit inside a try/except so a failure doesn't leave the caller's
+    # session in a dirty state. Callers in ``stock_data.py`` reuse the same
+    # session for follow-up queries; without rollback those queries would
+    # hit "transaction aborted" errors on PostgreSQL.
+    try:
         result = session.execute(stmt)
         session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
-        # Log if rowcount differs from expected
-        if result.rowcount != new_count:
-            logger.warning(
-                f"Expected to insert {new_count} records but rowcount was {result.rowcount}"
-            )
-
-        return result.rowcount
-    else:
-        logger.debug(
-            f"All {len(df)} records already exist in cache for {ticker_symbol}"
+    # ``result.rowcount`` semantics vary by backend: SQLite executemany can
+    # return ``-1`` in some versions, and upserts may report 1-per-row even
+    # when rows are unchanged. Clamp negatives to 0 and warn on mismatch so
+    # callers get a trustworthy diagnostic rather than "upserted -1 records".
+    rowcount = result.rowcount
+    if rowcount is None or rowcount < 0:
+        logger.warning(
+            "bulk_insert_price_data: backend reported rowcount=%s for %d records "
+            "(%s); returning 0 as a best-effort diagnostic.",
+            rowcount,
+            len(records),
+            ticker_symbol,
         )
         return 0
+    if rowcount != len(records):
+        logger.debug(
+            "bulk_insert_price_data: rowcount=%d for %d records on %s "
+            "(expected for unchanged upserts on some backends).",
+            rowcount,
+            len(records),
+            ticker_symbol,
+        )
+    return rowcount
 
 
 def get_latest_maverick_screening(days_back: int = 1) -> dict:

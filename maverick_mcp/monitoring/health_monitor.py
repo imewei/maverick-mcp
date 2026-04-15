@@ -44,6 +44,11 @@ class HealthMonitor:
         self.health_history = []
         self.dashboard = get_status_dashboard()
         self.circuit_breaker_manager = get_circuit_breaker_manager()
+        # Timestamps of the first breach in the current run of sustained-threshold
+        # events. None means "not currently breaching." Used to gate alerts on
+        # ALERT_THRESHOLDS["high_cpu_duration"] / ["high_memory_duration"].
+        self._high_cpu_since: float | None = None
+        self._high_memory_since: float | None = None
 
     async def start(self):
         """Start all background monitoring tasks."""
@@ -198,16 +203,51 @@ class HealthMonitor:
             from maverick_mcp.api.routers.health_enhanced import _get_resource_usage
 
             resource_usage = _get_resource_usage()
+            now = time.time()
 
-            # Check CPU usage
-            if resource_usage.cpu_percent > 80:
-                await self._handle_high_cpu_usage(resource_usage.cpu_percent)
+            # Alert on this process's CPU, not host-wide CPU. A noisy neighbor
+            # on the host shouldn't trigger a service-level alert. Require the
+            # breach to persist contiguously above ``_CPU_HIGH`` for
+            # ALERT_THRESHOLDS["high_cpu_duration"] before firing, so
+            # single-reading spikes don't page anyone.
+            #
+            # Contiguous-above-HIGH semantics (no hysteresis band): any
+            # reading ≤ HIGH resets the breach clock. The previous
+            # "hold-in-band" behavior could fire a sustained alert after a
+            # single spike followed by long oscillation inside (LOW, HIGH],
+            # even though CPU was never contiguously high. We accept the
+            # trade-off that brief flapping at exactly 80% (79.9/80.1) may
+            # re-arm the clock each dip — that's a narrow failure mode and
+            # in practice such a workload is not "sustained high CPU"
+            # anyway, so a delayed page there is acceptable.
+            _CPU_HIGH = 80
+            if resource_usage.process_cpu_percent > _CPU_HIGH:
+                if self._high_cpu_since is None:
+                    self._high_cpu_since = now
+                elif (now - self._high_cpu_since) >= ALERT_THRESHOLDS[
+                    "high_cpu_duration"
+                ]:
+                    await self._handle_high_cpu_usage(
+                        resource_usage.process_cpu_percent
+                    )
+            else:
+                self._high_cpu_since = None
 
-            # Check memory usage
-            if resource_usage.memory_percent > 85:
-                await self._handle_high_memory_usage(resource_usage.memory_percent)
+            # Memory uses the same contiguous-above-threshold pattern.
+            # Host memory is fine to alert on because the process shares
+            # that pool.
+            _MEM_HIGH = 85
+            if resource_usage.memory_percent > _MEM_HIGH:
+                if self._high_memory_since is None:
+                    self._high_memory_since = now
+                elif (now - self._high_memory_since) >= ALERT_THRESHOLDS[
+                    "high_memory_duration"
+                ]:
+                    await self._handle_high_memory_usage(resource_usage.memory_percent)
+            else:
+                self._high_memory_since = None
 
-            # Check disk usage
+            # Disk fills slowly — a single reading above 90% is already actionable.
             if resource_usage.disk_percent > 90:
                 await self._handle_high_disk_usage(resource_usage.disk_percent)
 

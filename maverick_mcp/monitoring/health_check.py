@@ -110,7 +110,16 @@ class HealthChecker:
             try:
                 component_results[component_name] = await task
             except Exception as e:
-                logger.error(f"Health check failed for {component_name}: {e}")
+                # Use ``logger.exception`` so the stack trace reaches the log.
+                # The prior ``logger.error(f"...: {e}")`` printed only the
+                # message — which is how the stale ``maverick_mcp.data.database``
+                # import survived seven months: the ``ModuleNotFoundError``
+                # was stringified into ``message`` but no traceback pointed at
+                # the offending import line. Keep the message-only copy in the
+                # ComponentHealth payload (it's what the readiness JSON shows).
+                logger.exception(
+                    "Health check failed for %s", component_name
+                )
                 component_results[component_name] = ComponentHealth(
                     name=component_name,
                     status=HealthStatus.UNHEALTHY,
@@ -162,11 +171,19 @@ class HealthChecker:
         """Check database health."""
         start_time = time.time()
 
+        from sqlalchemy import text
+
+        # The `purge billing artifacts` refactor (439dca1, 2025-09-22) renamed
+        # ``data/database.py`` → ``data/session_management.py`` but missed this
+        # one call site. The old except-Exception around the import swallowed
+        # the resulting ``ModuleNotFoundError`` as "database unhealthy", which
+        # kept ``/health/ready`` at 503 for seven months without anyone noticing
+        # (SSE/tool traffic doesn't consult readiness). Keep the import at
+        # module-load position below so a future rename fails at import time,
+        # not inside the probe where it gets mistaken for a DB outage.
+        from maverick_mcp.data.session_management import get_db_session
+
         try:
-            from sqlalchemy import text
-
-            from maverick_mcp.data.database import get_db_session
-
             with get_db_session() as session:
                 # Simple query to test database connectivity
                 result = session.execute(text("SELECT 1 as health_check"))
@@ -528,29 +545,31 @@ class HealthChecker:
         """
         import asyncio
 
+        # Detect whether we're inside a running event loop
         try:
-            # Try to get the current event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're already in an async context, return simplified status
-                return {
-                    "status": "HEALTHY",
-                    "components": {
-                        name: {"status": "UNKNOWN", "message": "Check pending"}
-                        for name in self._component_checkers.keys()
-                    },
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "message": "Health check in async context",
-                    "uptime_seconds": time.time() - self.start_time,
-                }
-            else:
-                # Run the async check in the existing loop
-                result = loop.run_until_complete(self.check_health())
-                return self._health_to_dict(result)
+            asyncio.get_running_loop()
         except RuntimeError:
-            # No event loop exists, create one
+            # No running loop — safe to use asyncio.run()
             result = asyncio.run(self.check_health())
             return self._health_to_dict(result)
+
+        # We're inside a running loop and cannot ``run_until_complete``.
+        # Return ``UNKNOWN`` (not ``HEALTHY``) so monitors don't report
+        # green while components are actually un-checked. Callers in async
+        # contexts must invoke ``check_health()`` directly.
+        return {
+            "status": "UNKNOWN",
+            "components": {
+                name: {"status": "UNKNOWN", "message": "Check pending"}
+                for name in self._component_checkers.keys()
+            },
+            "timestamp": datetime.now(UTC).isoformat(),
+            "message": (
+                "get_health_status() called from async context — "
+                "call check_health() directly to get real component status"
+            ),
+            "uptime_seconds": time.time() - self.start_time,
+        }
 
     async def check_overall_health(self) -> dict[str, Any]:
         """

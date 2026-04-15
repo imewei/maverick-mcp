@@ -30,6 +30,11 @@ from maverick_mcp.data.performance import (
     request_cache,
 )
 
+# Shared NYSE-calendar anchor — see maverick_mcp/utils/timezones.py. The
+# historical per-module copies diverged in naming (_US_EASTERN vs
+# _US_EASTERN_ZI); one source prevents drift.
+from maverick_mcp.utils.timezones import US_EASTERN as _US_EASTERN_ZI
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,7 +107,7 @@ class OptimizedStockDataProvider:
             DataFrame with OHLCV data
         """
         if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
+            end_date = datetime.now(_US_EASTERN_ZI).strftime("%Y-%m-%d")
 
         async with monitored_db_session("get_stock_price_data") as session:
             async_session: AsyncSession = session
@@ -221,7 +226,7 @@ class OptimizedStockDataProvider:
                     {where_clause}
                     ORDER BY ms.combined_score DESC, ms.pattern_detected ASC
                     LIMIT :limit
-                """
+                """  # nosec B608 - where_clause is a static constant toggle; user input (min_score) uses :min_score bind parameter
                 )
 
                 result = await async_session.execute(query, params)
@@ -329,7 +334,7 @@ class OptimizedStockDataProvider:
                 {where_clause}
                 ORDER BY ms.momentum_score DESC
                 LIMIT :limit
-            """
+            """  # nosec B608 - where_clause is a static constant toggle; user input (min_momentum_score) uses :min_momentum_score bind parameter
             )
 
             result = await async_session.execute(query, params)
@@ -373,7 +378,7 @@ class OptimizedStockDataProvider:
             List of high volume stock data
         """
         if not date:
-            date = datetime.now().strftime("%Y-%m-%d")
+            date = datetime.now(_US_EASTERN_ZI).strftime("%Y-%m-%d")
 
         async with monitored_db_session("get_high_volume_stocks") as session:
             async_session: AsyncSession = session
@@ -438,7 +443,7 @@ class OptimizedStockDataProvider:
             Dictionary mapping symbols to DataFrames
         """
         if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
+            end_date = datetime.now(_US_EASTERN_ZI).strftime("%Y-%m-%d")
 
         # Convert symbols to uppercase for consistency
         symbols = [s.upper() for s in symbols]

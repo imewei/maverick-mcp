@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 
 from fastmcp import FastMCP
 
+from maverick_mcp.api.routers._error_handling import tool_error_response
+from maverick_mcp.utils.mcp_types import OptionalStrList
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +35,7 @@ def register_journal_tools(mcp: FastMCP) -> None:
         entry_price: float,
         shares: float,
         rationale: str | None = None,
-        tags: list[str] | None = None,
+        tags: OptionalStrList = None,
         notes: str | None = None,
     ) -> dict:
         """Add a new open trade entry."""
@@ -59,15 +62,16 @@ def register_journal_tools(mcp: FastMCP) -> None:
                     "side": entry.side,
                     "entry_price": entry.entry_price,
                     "shares": entry.shares,
-                    "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
+                    "entry_date": entry.entry_date.isoformat()
+                    if entry.entry_date
+                    else None,
                     "tags": entry.tags,
                     "status": entry.status,
                     "rationale": entry.rationale,
                     "notes": entry.notes,
                 }
         except Exception as e:
-            logger.error("journal_add_trade error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("journal_add_trade", e, logger)
 
     @mcp.tool(
         name="journal_close_trade",
@@ -106,17 +110,18 @@ def register_journal_tools(mcp: FastMCP) -> None:
                     "shares": entry.shares,
                     "pnl": entry.pnl,
                     "r_multiple": entry.r_multiple,
-                    "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
-                    "exit_date": entry.exit_date.isoformat() if entry.exit_date else None,
+                    "entry_date": entry.entry_date.isoformat()
+                    if entry.entry_date
+                    else None,
+                    "exit_date": entry.exit_date.isoformat()
+                    if entry.exit_date
+                    else None,
                     "tags": entry.tags,
                     "status": entry.status,
                     "notes": entry.notes,
                 }
-        except ValueError as e:
-            return {"error": str(e)}
         except Exception as e:
-            logger.error("journal_close_trade error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("journal_close_trade", e, logger)
 
     @mcp.tool(
         name="journal_list_trades",
@@ -158,16 +163,19 @@ def register_journal_tools(mcp: FastMCP) -> None:
                             "pnl": e.pnl,
                             "status": e.status,
                             "tags": e.tags,
-                            "entry_date": e.entry_date.isoformat() if e.entry_date else None,
-                            "exit_date": e.exit_date.isoformat() if e.exit_date else None,
+                            "entry_date": e.entry_date.isoformat()
+                            if e.entry_date
+                            else None,
+                            "exit_date": e.exit_date.isoformat()
+                            if e.exit_date
+                            else None,
                         }
                         for e in entries
                     ],
                     "count": len(entries),
                 }
         except Exception as e:
-            logger.error("journal_list_trades error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("journal_list_trades", e, logger)
 
     # ------------------------------------------------------------------
     # Strategy performance tools
@@ -210,8 +218,7 @@ def register_journal_tools(mcp: FastMCP) -> None:
                     "profit_factor": perf.profit_factor,
                 }
         except Exception as e:
-            logger.error("get_strategy_performance error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_strategy_performance", e, logger)
 
     @mcp.tool(
         name="get_strategy_comparison",
@@ -249,8 +256,7 @@ def register_journal_tools(mcp: FastMCP) -> None:
                     "count": len(strategies),
                 }
         except Exception as e:
-            logger.error("get_strategy_comparison error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("get_strategy_comparison", e, logger)
 
     # ------------------------------------------------------------------
     # Trade review
@@ -280,11 +286,15 @@ def register_journal_tools(mcp: FastMCP) -> None:
                 if entry.exit_price is not None and entry.entry_price:
                     if entry.side == "long":
                         pnl_pct = (
-                            (entry.exit_price - entry.entry_price) / entry.entry_price * 100
+                            (entry.exit_price - entry.entry_price)
+                            / entry.entry_price
+                            * 100
                         )
                     else:
                         pnl_pct = (
-                            (entry.entry_price - entry.exit_price) / entry.entry_price * 100
+                            (entry.entry_price - entry.exit_price)
+                            / entry.entry_price
+                            * 100
                         )
 
                 return {
@@ -296,8 +306,12 @@ def register_journal_tools(mcp: FastMCP) -> None:
                     "entry_price": entry.entry_price,
                     "exit_price": entry.exit_price,
                     "shares": entry.shares,
-                    "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
-                    "exit_date": entry.exit_date.isoformat() if entry.exit_date else None,
+                    "entry_date": entry.entry_date.isoformat()
+                    if entry.entry_date
+                    else None,
+                    "exit_date": entry.exit_date.isoformat()
+                    if entry.exit_date
+                    else None,
                     "pnl": entry.pnl,
                     "pnl_pct": pnl_pct,
                     "r_multiple": entry.r_multiple,
@@ -306,5 +320,4 @@ def register_journal_tools(mcp: FastMCP) -> None:
                     "notes": entry.notes,
                 }
         except Exception as e:
-            logger.error("journal_trade_review error: %s", e)
-            return {"error": str(e)}
+            return tool_error_response("journal_trade_review", e, logger)

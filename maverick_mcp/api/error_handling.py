@@ -5,7 +5,7 @@ This module provides centralized error handling with structured responses,
 proper logging, monitoring integration, and client-friendly error messages.
 """
 
-import asyncio
+import inspect
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -51,7 +51,7 @@ class ErrorHandler:
         return {
             # MaverickMCP exceptions
             ValidationError: {
-                "status_code": status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "status_code": status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "code": "VALIDATION_ERROR",
                 "log_level": "warning",
             },
@@ -385,7 +385,7 @@ async def validation_exception_handler(
     )
 
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=validation_error_response(errors, trace_id),
     )
 
@@ -453,7 +453,7 @@ def with_error_handling(context_fn: Callable[[Any], dict[str, Any]] | None = Non
                     raise
 
         # Return appropriate wrapper based on function type
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return async_wrapper
         else:
             return sync_wrapper

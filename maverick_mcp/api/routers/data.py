@@ -17,6 +17,7 @@ import requests
 import requests.exceptions
 from fastmcp import FastMCP
 
+from maverick_mcp.api.routers._error_handling import tool_error_response
 from maverick_mcp.config.settings import settings
 from maverick_mcp.data.models import PriceCache
 from maverick_mcp.data.session_management import get_db_session_read_only
@@ -26,6 +27,7 @@ from maverick_mcp.infrastructure.data_fetching import StockDataFetchingService
 from maverick_mcp.providers.stock_data import (
     StockDataProvider,
 )  # Kept for backward compatibility
+from maverick_mcp.utils.mcp_types import StrList
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +94,7 @@ def fetch_stock_data(
 
 
 def fetch_stock_data_batch(
-    tickers: list[str],
+    tickers: StrList,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict[str, Any]:
@@ -392,8 +394,7 @@ def get_chart_links(ticker: str) -> dict[str, Any]:
             "description": "External chart resources for detailed analysis",
         }
     except Exception as e:
-        logger.error(f"Error generating chart links for {ticker}: {e}")
-        return {"error": str(e)}
+        return tool_error_response("get_chart_links", e, logger)
 
 
 def clear_cache(ticker: str | None = None) -> dict[str, Any]:

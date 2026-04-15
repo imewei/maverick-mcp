@@ -7,7 +7,7 @@ Provides comprehensive stock data retrieval with database caching and maverick s
 # pyright: reportOperatorIssue=false
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pandas_market_calendars as mcal
@@ -34,6 +34,11 @@ from maverick_mcp.utils.yfinance_pool import get_yfinance_pool
 
 # Load environment variables
 logger = logging.getLogger("maverick_mcp.stock_data")
+
+# NYSE trading-calendar anchor. Shared across provider + data layers —
+# see maverick_mcp/utils/timezones.py and the stale-data audit for why
+# "today in Eastern" (not UTC, not local) is the right default anchor.
+from maverick_mcp.utils.timezones import US_EASTERN as _US_EASTERN_ZI  # noqa: E402
 
 
 class EnhancedStockDataProvider:
@@ -167,6 +172,24 @@ class EnhancedStockDataProvider:
                                 )
                             )
 
+                # Freshness guard. The cached tail may have been written by a
+                # prior call that ran mid-session, producing a provisional
+                # OHLCV row for the then-current trading day. A subsequent
+                # call that finds ``cached_end == end_dt`` will otherwise
+                # serve that provisional row indefinitely. Force a re-fetch
+                # of the most recent completed trading session whenever it
+                # falls within the user's requested range. With
+                # ``bulk_insert_price_data`` upserting on ``(stock_id, date)``
+                # this is idempotent: fresh rows overwrite themselves, stale
+                # provisional rows are corrected.
+                most_recent_session = self._get_most_recent_completed_trading_session()
+                guard_range: tuple[str, str] | None = None
+                if most_recent_session <= end_dt:
+                    guard_str = most_recent_session.strftime("%Y-%m-%d")
+                    guard_range = (guard_str, guard_str)
+                    if guard_range not in missing_ranges:
+                        missing_ranges.append(guard_range)
+
                 # If no missing data, return cached data
                 if not missing_ranges:
                     logger.info(
@@ -192,11 +215,38 @@ class EnhancedStockDataProvider:
                         all_dfs.append(missing_df)
                         # Cache the new data
                         self._cache_price_data(session, symbol, missing_df)
+                    elif (
+                        guard_range is not None
+                        and (miss_start, miss_end) == guard_range
+                    ):
+                        # The freshness-guard re-fetch for the most recent
+                        # completed trading session returned nothing. The
+                        # cached row for that date (if any) is still in
+                        # ``combined_df`` and will be served — which means
+                        # the caller may receive a provisional/stale bar
+                        # despite the guard. Surface it loudly; silent
+                        # fallback to stale data would defeat the whole
+                        # point of the guard. Callers observing this log
+                        # repeatedly should escalate: network path to
+                        # yfinance is broken for same-day refresh.
+                        logger.warning(
+                            "Freshness-guard re-fetch returned empty for %s on %s; "
+                            "serving possibly-stale cached bar (yfinance may be "
+                            "rate-limiting or down for same-day data)",
+                            symbol,
+                            miss_start,
+                        )
 
-                # Combine all data
+                # Combine all data. ``all_dfs`` is built as [cached_df, *fresh_fetches],
+                # so a date that appears in both the cache and a freshness-guard
+                # re-fetch will have the cached row first and the fresh row after.
+                # ``keep="last"`` picks the freshly-fetched row, making the guard
+                # actually effective for the current call — otherwise the DB
+                # would be corrected by the upsert while this call's return
+                # value still carries the stale provisional bar. See commit
+                # 39b665a for the Phase 1 context.
                 combined_df = pd.concat(all_dfs).sort_index()
-                # Remove any duplicates (keep first)
-                combined_df = combined_df[~combined_df.index.duplicated(keep="first")]
+                combined_df = combined_df[~combined_df.index.duplicated(keep="last")]
 
                 # Filter to requested range - ensure index is timezone-naive
                 combined_df.index = pd.to_datetime(combined_df.index).tz_localize(None)
@@ -403,6 +453,28 @@ class EnhancedStockDataProvider:
         schedule = self.market_calendar.schedule(start_date=date, end_date=date)
         return len(schedule) > 0
 
+    def _get_most_recent_completed_trading_session(self) -> pd.Timestamp:
+        """Return the most recent NYSE trading day whose regular session has closed.
+
+        The freshness guard in the smart-cache path uses this to decide
+        whether the tail of the cache might be serving a provisional
+        (mid-session) bar. The rule:
+
+        * On a trading day after 4:00 PM ET, today is the most recent
+          completed session.
+        * Otherwise, fall back to the most recent prior trading day.
+
+        Returns a ``pd.Timestamp`` at midnight (date-only) to line up with
+        the cached-end comparison elsewhere in the smart-cache logic.
+        """
+        now_eastern = datetime.now(_US_EASTERN_ZI)
+        today = pd.Timestamp(now_eastern.date())
+        market_close = now_eastern.replace(hour=16, minute=0, second=0, microsecond=0)
+        if self._is_trading_day(today) and now_eastern >= market_close:
+            return today
+        # Previous completed session: look backward from yesterday.
+        return self._get_last_trading_day(today - timedelta(days=1))
+
     def _get_db_session(self) -> tuple[Session, bool]:
         """
         Get a database session.
@@ -510,14 +582,16 @@ class EnhancedStockDataProvider:
             if not cache_df.empty:
                 logger.debug(f"Sample row: {cache_df.iloc[0].to_dict()}")
 
-            # Insert data
+            # Upsert data. ``count`` reflects rows affected by the upsert,
+            # which includes both fresh inserts and overwrites of
+            # previously-cached (possibly provisional) bars — so the log
+            # line says "upserted", not "new". Misattributing updates as
+            # new rows was how the stale-data bug hid for so long.
             count = bulk_insert_price_data(session, symbol, cache_df)
             if count == 0:
-                logger.info(
-                    f"No new records cached for {symbol} (data may already exist)"
-                )
+                logger.info(f"No price records to upsert for {symbol}")
             else:
-                logger.info(f"Cached {count} new price records for {symbol}")
+                logger.info(f"Upserted {count} price records for {symbol}")
 
         except Exception as e:
             logger.error(f"Error caching price data for {symbol}: {e}", exc_info=True)
@@ -555,11 +629,15 @@ class EnhancedStockDataProvider:
                 symbol, start_date, end_date, period, interval
             )
 
-        # Set default dates if not provided
+        # Set default dates if not provided.
+        # Anchor to US/Eastern so "today" matches the user's expectation of
+        # the most recent US trading day and is independent of the caller's
+        # UTC offset.
+        now_eastern = datetime.now(_US_EASTERN_ZI)
         if start_date is None:
-            start_date = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%d")
+            start_date = (now_eastern - timedelta(days=365)).strftime("%Y-%m-%d")
         if end_date is None:
-            end_date = datetime.now(UTC).strftime("%Y-%m-%d")
+            end_date = now_eastern.strftime("%Y-%m-%d")
 
         # For daily data, adjust end date to last trading day if it's not a trading day
         # This prevents unnecessary cache misses on weekends/holidays

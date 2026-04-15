@@ -8,6 +8,7 @@ to avoid repeated API calls during development and testing.
 import asyncio
 import functools
 import hashlib
+import inspect
 import json
 import time
 from collections import OrderedDict
@@ -44,33 +45,37 @@ class QuickCache:
         # Use hash for shorter keys
         return hashlib.sha256(key_str.encode()).hexdigest()
 
+    # ── sync accessors (no event-loop overhead) ──────────────────────
+    def get_sync(self, key: str) -> Any | None:
+        """Get value from cache (sync path — no event-loop needed)."""
+        if key in self.cache:
+            value, expiry = self.cache[key]
+            if time.time() < expiry:
+                self.cache.move_to_end(key)
+                self.hits += 1
+                return value
+            else:
+                del self.cache[key]
+        self.misses += 1
+        return None
+
+    def set_sync(self, key: str, value: Any, ttl_seconds: float) -> None:
+        """Set value in cache (sync path — no event-loop needed)."""
+        expiry = time.time() + ttl_seconds
+        if len(self.cache) >= self.max_size:
+            self.cache.popitem(last=False)
+        self.cache[key] = (value, expiry)
+
+    # ── async accessors (lock-protected for concurrent coroutines) ──
     async def get(self, key: str) -> Any | None:
         """Get value from cache if not expired."""
         async with self._lock:
-            if key in self.cache:
-                value, expiry = self.cache[key]
-                if time.time() < expiry:
-                    # Move to end (LRU)
-                    self.cache.move_to_end(key)
-                    self.hits += 1
-                    return value
-                else:
-                    # Expired, remove it
-                    del self.cache[key]
-
-            self.misses += 1
-            return None
+            return self.get_sync(key)
 
     async def set(self, key: str, value: Any, ttl_seconds: float):
         """Set value in cache with TTL."""
         async with self._lock:
-            expiry = time.time() + ttl_seconds
-
-            # Remove oldest if at capacity
-            if len(self.cache) >= self.max_size:
-                self.cache.popitem(last=False)
-
-            self.cache[key] = (value, expiry)
+            self.set_sync(key, value, ttl_seconds)
 
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
@@ -140,6 +145,7 @@ def quick_cache(
 
             # Try to get from cache
             cached_value = await _cache.get(cache_key)
+            _maybe_emit_stats()
             if cached_value is not None:
                 if log_stats:
                     stats = _cache.get_stats()
@@ -189,53 +195,35 @@ def quick_cache(
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> T:
-            # For sync functions, we need to run the async cache operations
-            # in a thread to avoid blocking
-            loop_policy = asyncio.get_event_loop_policy()
-            try:
-                previous_loop = loop_policy.get_event_loop()
-            except RuntimeError:
-                previous_loop = None
+            # Use sync cache accessors — no event-loop creation overhead.
+            cache_key = _cache.make_key(
+                f"{key_prefix}:{func.__name__}" if key_prefix else func.__name__,
+                args,
+                kwargs,
+            )
 
-            loop = loop_policy.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                cache_key = _cache.make_key(
-                    f"{key_prefix}:{func.__name__}" if key_prefix else func.__name__,
-                    args,
-                    kwargs,
-                )
+            # Try to get from cache
+            cached_value = _cache.get_sync(cache_key)
+            _maybe_emit_stats()
+            if cached_value is not None:
+                if log_stats:
+                    stats = _cache.get_stats()
+                    logger.debug(
+                        f"Cache HIT for {func.__name__}",
+                        extra={
+                            "function": func.__name__,
+                            "hit_rate": stats["hit_rate"],
+                        },
+                    )
+                return cached_value
 
-                # Try to get from cache (sync version)
-                cached_value = loop.run_until_complete(_cache.get(cache_key))
-                if cached_value is not None:
-                    if log_stats:
-                        stats = _cache.get_stats()
-                        logger.debug(
-                            f"Cache HIT for {func.__name__}",
-                            extra={
-                                "function": func.__name__,
-                                "hit_rate": stats["hit_rate"],
-                            },
-                        )
-                    return cached_value
-
-                # Cache miss
-                result = func(*args, **kwargs)
-
-                # Cache the result
-                loop.run_until_complete(_cache.set(cache_key, result, ttl_seconds))
-
-                return result
-            finally:
-                loop.close()
-                if previous_loop is not None:
-                    asyncio.set_event_loop(previous_loop)
-                else:
-                    asyncio.set_event_loop(None)
+            # Cache miss — execute the sync function, then cache
+            result = func(*args, **kwargs)
+            _cache.set_sync(cache_key, result, ttl_seconds)
+            return result
 
         # Return appropriate wrapper based on function type
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             return async_wrapper  # type: ignore[return-value]
         else:
             return sync_wrapper
@@ -252,6 +240,63 @@ def clear_cache():
     """Clear the global cache."""
     _cache.clear()
     logger.info("Cache cleared")
+
+
+# ── observability: automatic hit-rate emission ──────────────────────
+#
+# The audit flagged that ``hits`` / ``misses`` were being tracked but never
+# exposed: operators had no way to tell whether the cache was pulling its
+# weight. The original design required opt-in via ``log_stats=True`` on
+# each decorator call, which nobody set.
+#
+# We now emit a consolidated snapshot every ``_STATS_EMIT_INTERVAL_S`` or
+# every ``_STATS_EMIT_REQUEST_STEP`` requests, whichever comes first, at
+# INFO level. No new threads, no event loop — the hook piggybacks on the
+# hot path via ``_record_access``.
+
+_STATS_EMIT_INTERVAL_S = 300.0  # 5 minutes
+_STATS_EMIT_REQUEST_STEP = 500
+_last_stats_emit_t = time.time()
+_requests_since_emit = 0
+
+
+def _maybe_emit_stats() -> None:
+    """Emit a consolidated hit-rate snapshot if the interval has elapsed.
+
+    Cheap by design: two int reads, one wall-clock read, at most one log
+    line per interval. Called from the decorator wrappers on every
+    request — must not do anything heavy. Hidden behind ``settings.api.debug
+    or MAVERICK_QUICK_CACHE_STATS=1`` so a production STDIO transport does
+    not spam stdout.
+    """
+    import os as _os
+
+    enabled = settings.api.debug or _os.getenv("MAVERICK_QUICK_CACHE_STATS") == "1"
+    if not enabled:
+        return
+
+    global _last_stats_emit_t, _requests_since_emit
+    _requests_since_emit += 1
+
+    now = time.time()
+    if (
+        _requests_since_emit < _STATS_EMIT_REQUEST_STEP
+        and (now - _last_stats_emit_t) < _STATS_EMIT_INTERVAL_S
+    ):
+        return
+
+    stats = _cache.get_stats()
+    _last_stats_emit_t = now
+    _requests_since_emit = 0
+    logger.info(
+        "quick_cache stats",
+        extra={
+            "quick_cache_hits": stats["hits"],
+            "quick_cache_misses": stats["misses"],
+            "quick_cache_hit_rate_pct": stats["hit_rate"],
+            "quick_cache_size": stats["size"],
+        },
+    )
 
 
 # Convenience decorators with common TTLs

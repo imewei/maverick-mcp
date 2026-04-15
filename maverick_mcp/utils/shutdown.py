@@ -6,6 +6,9 @@ for all server components to ensure safe deployments and prevent data loss.
 """
 
 import asyncio
+import inspect
+import logging
+import os
 import signal
 import sys
 import time
@@ -16,6 +19,52 @@ from typing import Any
 from maverick_mcp.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _force_exit(exit_code: int) -> None:
+    """Flush buffers and exit the process with ``exit_code``.
+
+    Uses ``os._exit`` rather than ``sys.exit`` because the shutdown path
+    runs inside a coroutine scheduled via ``loop.create_task(...)`` from
+    the signal handler (see ``_signal_handler``). ``sys.exit`` raises
+    ``SystemExit``, which asyncio stores on the Task result instead of
+    propagating to the interpreter — the process keeps running and the
+    non-zero exit-code guarantee silently breaks for orchestrators
+    (systemd, Kubernetes) that rely on it to distinguish clean exit
+    from cleanup failure. ``os._exit`` bypasses Python's normal unwind
+    and actually terminates the process.
+
+    We flush logging and stdio first so the post-mortem log line that
+    explains *why* we're exiting non-zero actually reaches disk/stderr
+    before the process disappears.
+
+    See docs/runbooks/asyncio-systemexit.md.
+    """
+    # Flush Sentry if it's initialized. ``os._exit`` skips atexit handlers,
+    # which is how sentry-sdk normally drains its background transport — so
+    # without this call, events captured in the seconds before shutdown
+    # (including the cleanup-failure exception above) never reach Sentry.
+    # Guarded by a try/except since Sentry is an optional dependency and
+    # the shutdown path must not itself raise.
+    try:
+        import sentry_sdk
+
+        client = sentry_sdk.Hub.current.client
+        if client is not None:
+            sentry_sdk.flush(timeout=2.0)
+    except Exception:
+        pass
+
+    logging.shutdown()
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(exit_code)
 
 
 class GracefulShutdownHandler:
@@ -42,6 +91,15 @@ class GracefulShutdownHandler:
         self._cleanup_callbacks: list[Callable] = []
         self._active_requests: set[asyncio.Task] = set()
         self._original_handlers: dict[int, Any] = {}
+        # ``_signal_received`` is set synchronously in ``_signal_handler``
+        # so a second signal arriving before the first ``_async_shutdown``
+        # task gets a chance to run can't schedule a duplicate.
+        # ``_shutdown_in_progress`` is set when the async shutdown actually
+        # *starts executing* — the two are distinct because the async task
+        # is scheduled via ``loop.create_task`` and may run an arbitrary
+        # time after the signal (see 2026-04-15 backend.log: two SIGTERMs
+        # landed 102ms apart, both scheduled shutdown tasks).
+        self._signal_received = False
         self._shutdown_in_progress = False
         self._start_time = time.time()
 
@@ -94,15 +152,29 @@ class GracefulShutdownHandler:
         signal_name = signal.Signals(signum).name
         logger.info(f"{self.name}: Received {signal_name} signal")
 
-        if self._shutdown_in_progress:
+        # Deduplicate here (not just inside ``_async_shutdown``). The async
+        # task scheduled by ``loop.create_task`` runs at some later loop
+        # iteration; a second signal arriving before that task starts
+        # executing would otherwise schedule a duplicate shutdown — exactly
+        # what the 2026-04-15 incident log showed (two "Received SIGTERM"
+        # lines 102ms apart because both invocations passed the old gate
+        # on ``_shutdown_in_progress``, which is only set *inside* the
+        # task).
+        if self._signal_received or self._shutdown_in_progress:
             logger.warning(
                 f"{self.name}: Shutdown already in progress, ignoring signal"
             )
             return
+        self._signal_received = True
 
-        # Trigger async shutdown
-        if asyncio.get_event_loop().is_running():
-            asyncio.create_task(self._async_shutdown(signal_name))
+        # Trigger async shutdown if we're inside a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            loop.create_task(self._async_shutdown(signal_name))
         else:
             # Fallback for non-async context
             self._sync_shutdown(signal_name)
@@ -148,26 +220,43 @@ class GracefulShutdownHandler:
                 for task in self._active_requests:
                     task.cancel()
 
-        # Phase 3: Run cleanup callbacks
+        # Phase 3: Run cleanup callbacks. Collect failures so we can propagate
+        # a non-zero exit code — graceful shutdown is meaningless if the caller
+        # (systemd, orchestrator) can't distinguish "clean exit" from "tried to
+        # clean up but something went wrong."
         logger.info(f"{self.name}: Phase 3 - Running cleanup callbacks")
+        cleanup_failures: list[str] = []
         for callback in self._cleanup_callbacks:
             try:
                 logger.debug(f"Running cleanup: {callback.__name__}")
-                if asyncio.iscoroutinefunction(callback):
+                if inspect.iscoroutinefunction(callback):
                     await asyncio.wait_for(callback(), timeout=5.0)
                 else:
                     callback()
-            except Exception as e:
-                logger.error(f"Error in cleanup callback {callback.__name__}: {e}")
+            except Exception:
+                # ``logger.exception`` attaches the active traceback via
+                # ``sys.exc_info()``. Shutdown-path failures are exactly where
+                # we want the full stack — losing it to ``{e}`` string
+                # interpolation contradicts ``_error_handling.py``'s own stated
+                # policy and hides root causes from post-mortem log diffs.
+                logger.exception("Error in cleanup callback %s", callback.__name__)
+                cleanup_failures.append(callback.__name__)
 
         # Phase 4: Final shutdown
         shutdown_duration = time.time() - shutdown_start
-        logger.info(
-            f"{self.name}: Graceful shutdown completed in {shutdown_duration:.1f}s"
-        )
+        exit_code = 1 if cleanup_failures else 0
+        if cleanup_failures:
+            logger.error(
+                f"{self.name}: Graceful shutdown completed in "
+                f"{shutdown_duration:.1f}s with cleanup failures: "
+                f"{', '.join(cleanup_failures)} (exit code {exit_code})"
+            )
+        else:
+            logger.info(
+                f"{self.name}: Graceful shutdown completed in {shutdown_duration:.1f}s"
+            )
 
-        # Exit the process
-        sys.exit(0)
+        _force_exit(exit_code)
 
     def _sync_shutdown(self, signal_name: str) -> None:
         """Perform synchronous shutdown (fallback)."""
@@ -177,16 +266,31 @@ class GracefulShutdownHandler:
         self._shutdown_in_progress = True
         logger.info(f"{self.name}: Starting sync shutdown (signal: {signal_name})")
 
-        # Run sync cleanup callbacks
+        # Run sync cleanup callbacks and collect failures for the exit code.
+        cleanup_failures: list[str] = []
         for callback in self._cleanup_callbacks:
-            if not asyncio.iscoroutinefunction(callback):
+            if not inspect.iscoroutinefunction(callback):
                 try:
                     callback()
-                except Exception as e:
-                    logger.error(f"Error in cleanup callback: {e}")
+                except Exception:
+                    # See async branch: preserve tracebacks on cleanup failure.
+                    logger.exception("Error in cleanup callback %s", callback.__name__)
+                    cleanup_failures.append(callback.__name__)
 
-        logger.info(f"{self.name}: Sync shutdown completed")
-        sys.exit(0)
+        exit_code = 1 if cleanup_failures else 0
+        if cleanup_failures:
+            logger.error(
+                f"{self.name}: Sync shutdown completed with cleanup failures: "
+                f"{', '.join(cleanup_failures)} (exit code {exit_code})"
+            )
+        else:
+            logger.info(f"{self.name}: Sync shutdown completed")
+        # Use the same hard-exit helper as the async path. The sync branch
+        # doesn't hit the asyncio ``SystemExit``-absorption trap, but keeping
+        # a single exit primitive means the two paths can't diverge and
+        # on-call has one invariant to reason about: "shutdown exits via
+        # ``_force_exit``." Consistency > micro-optimization.
+        _force_exit(exit_code)
 
     async def _wait_for_requests(self) -> None:
         """Wait for all active requests to complete."""
