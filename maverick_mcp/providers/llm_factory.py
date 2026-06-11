@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any
 
-from langchain_community.llms import FakeListLLM
+from langchain_core.language_models.fake import FakeListLLM
 
 from maverick_mcp.providers.openrouter_provider import (
     TaskType,
