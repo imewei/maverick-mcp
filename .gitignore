@@ -84,7 +84,7 @@ ta-lib-0.4.0-src.tar.gz
 # Local runtime artifacts
 .claude-progress.md
 .remember/
-data/
+/data/
 # Graphify semantic cache (ephemeral build artifacts)
 graphify-out/cache/
 

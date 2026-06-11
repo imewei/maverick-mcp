@@ -422,7 +422,7 @@ class ExaSearchProvider(WebSearchProvider):
                     )
 
                     # Call Exa search with optimized parameters
-                    exa_response = await async_exa_client.search_and_contents(
+                    exa_response = await async_exa_client.search(
                         **search_params
                     )
 
