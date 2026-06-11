@@ -110,23 +110,22 @@ This switches `protobuf` to the pure-Python parser, which accepts the legacy `_p
 
 ## CI gate — making this a blocking check
 
-`.github/workflows/dep-smoke.yml` runs the lockfile assertion and the
-import smoke test on every PR that touches `pyproject.toml`, `uv.lock`,
-the workflow itself, or `scripts/check_otel_versions.py`. The workflow
-failing is necessary but **not sufficient** to block a merge: GitHub
-will still allow merging unless **"dep-smoke / smoke" is marked as a
-required status check** in the branch protection rule for `main`.
+`.github/workflows/ci.yml` (the unified CI workflow) runs lint, docs-catalog,
+typecheck, and unit tests on every PR. The OTEL version constraint is enforced
+through the unit test suite and the `uv.lock` lower-bound pins.
 
-To finish wiring this as a real gate:
+To make a dependency check a hard merge gate:
 
 1. GitHub → Settings → Branches → branch protection rule for `main`.
-2. Under **Require status checks to pass before merging**, add
-   `dep-smoke / smoke` to the required list.
+2. Under **Require status checks to pass before merging**, add the
+   relevant `ci / <job-name>` check to the required list.
 3. Verify: open a PR that deliberately breaks the OTEL version pin
    (e.g. bump one OTEL package by hand without the matching peers) and
    confirm the "Merge" button is disabled while the workflow is red.
 
-Until step 2 is done, a dependency-sloppy PR can still reach `main`.
+Note: `dep-smoke.yml` and `scripts/check_otel_versions.py` were removed
+during the June 2026 upstream adoption. OTEL version consistency is now
+maintained via `uv.lock` lower-bound pins in `pyproject.toml`.
 
 ## Related
 

@@ -94,7 +94,7 @@ Portfolio-level risk analytics, position sizing, and threshold alerting. Subscri
 
 ## Conventions worth preserving
 
-- **Typed list parameters**: `@mcp.tool()` functions must use `StrList` / `OptionalStrList` from `maverick_mcp.utils.mcp_types` for any `list[str]` argument. Bare `list[str]` breaks for clients that JSON-stringify array arguments (Claude Desktop via `mcp-remote`). Enforced by `scripts/check_mcp_list_types.py` (runs in `make check`). See `docs/runbooks/mcp-client-serialization.md`.
+- **Typed list parameters**: `@mcp.tool()` functions must use `StrList` / `OptionalStrList` from `maverick_mcp.utils.mcp_types` for any `list[str]` argument. Bare `list[str]` breaks for clients that JSON-stringify array arguments (Claude Desktop via `mcp-remote`). Contract tests in `tests/test_mcp_list_coercion.py` pin this behavior. See `docs/runbooks/mcp-client-serialization.md`.
 - **Event payloads are dicts**, not dataclasses or Pydantic models. Keep the bus framework-agnostic.
 - **Scheduler jobs** must set `misfire_grace_time` and survive ASGI reloads cleanly — don't assume a long-lived loop.
 - **No direct cross-domain imports.** If `risk_dashboard.py` needs something from `journal.py`, route through the event bus or add it to the portfolio service.

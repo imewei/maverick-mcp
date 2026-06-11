@@ -25,7 +25,7 @@ MaverickMCP is a personal stock analysis MCP server built for Claude Desktop. It
   - `api/`: MCP server implementation
     - `server.py`: Main FastMCP server (simple stock analysis mode)
     - `routers/`: Domain-specific routers for organized tool groups
-      - `backtesting.py`, `intelligent_backtesting.py`, `research.py`, `portfolio.py`, `data.py`, `technical.py`, `screening.py`, `screening_ddd.py`
+      - `backtesting.py`, `intelligent_backtesting.py`, `research.py`, `portfolio.py`, `data.py`, `technical.py`, `screening.py`
       - **Roadmap v1 domains**: `signals.py`, `screening_pipeline.py`, `journal.py`, `watchlist.py`, `risk_dashboard.py`
       - `tool_registry.py`: Central registration point wiring router-level `register_*_tools` functions into the FastMCP app
       - `health_tools.py`, `agents.py`, `mcp_prompts.py`, `introspection.py`
@@ -448,7 +448,7 @@ All tools are organized into logical groups (**~95 `@mcp.tool` decorators total*
 1. **`maverick_mcp/api/routers/tool_registry.py`** — the primary registry. Wires domain-level `register_*_tools(mcp)` functions into the FastMCP app.
 2. **`maverick_mcp/api/server.py`** — hosts ~22 inline `@mcp.tool()` decorators (composite/demo tools that delegate to router implementations, e.g. `get_rsi_analysis`, `get_my_portfolio`, `fetch_stock_data`). These are registered at server import time and do **not** flow through `tool_registry.py`.
 
-Any tool-coverage audit, deprecation audit, or "no tool loss" guarantee must enumerate decorators in **both** locations. The `scripts/check_mcp_list_types.py` check already traverses both. Upstream data provider note: `get_stock_data` reads/writes `PriceCache` via `yfinance`, not Tiingo.
+Any tool-coverage audit, deprecation audit, or "no tool loss" guarantee must enumerate decorators in **both** locations. Upstream data provider note: `get_stock_data` reads/writes `PriceCache` via `yfinance`, not Tiingo.
 
 ### Data Tools (`/data/*`) - S&P 500 Pre-seeded
 
@@ -705,7 +705,7 @@ make redis-start
 - Implement graceful error handling
 - Use database caching for persistence
 - Follow FastMCP 2.0 patterns
-- **List parameters**: Use `StrList` / `OptionalStrList` from `maverick_mcp.utils.mcp_types` for any `list[str]` argument on a `@mcp.tool()` function. Bare `list[str]` fails for clients (e.g. Claude Desktop via `mcp-remote`) that JSON-stringify array arguments. The script `scripts/check_mcp_list_types.py` enforces this and runs as part of `make check`. See `docs/runbooks/mcp-client-serialization.md`.
+- **List parameters**: Use `StrList` / `OptionalStrList` from `maverick_mcp.utils.mcp_types` for any `list[str]` argument on a `@mcp.tool()` function. Bare `list[str]` fails for clients (e.g. Claude Desktop via `mcp-remote`) that JSON-stringify array arguments. See `docs/runbooks/mcp-client-serialization.md`.
 
 ## Troubleshooting
 
@@ -814,6 +814,14 @@ Once connected to Claude Desktop, test the backtesting framework:
 ```
 
 ## Recent Updates
+
+### Upstream Adoption (June 2026)
+
+- **Security Dependency Bumps**: fastmcp 2.7→3.3, langgraph 0.4→1.2, openai 1.84→2.38, anthropic 0.52→0.104, cryptography 42→48, yfinance 0.2→1.4 (+ 10 more packages aligned to upstream lower bounds)
+- **CI Overhaul**: New unified `ci.yml` with 4 jobs (lint/ruff, docs-catalog, typecheck/ty, unit tests). Removed `dep-smoke.yml`. Added `docs-check` gate enforced by `tools/check_docs_catalog.py`.
+- **Dead Code Removal**: Deleted `api/services/` layer, 4 stale router variants (`screening_ddd`, `screening_parallel`, `technical_ddd`, `data_enhanced`), and 4 stale check scripts (`check_mcp_list_types.py`, `check_otel_versions.py`, `check_router_variants.py`, `check_mcp_descriptions.py`)
+- **Research Provider Package**: New `maverick_mcp/agents/research/providers/` with `WebSearchProvider` base class, `ExaSearchProvider`, and `TavilySearchProvider`
+- **Documentation Catalog**: New `docs/CATALOG.md`, `docs/features/`, `docs/references/` directories. Enforced by `tools/check_docs_catalog.py` and CI.
 
 ### Production-Ready Backtesting Framework (NEW)
 

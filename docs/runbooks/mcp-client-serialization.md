@@ -45,8 +45,9 @@ The JSON schema the client sees still advertises `array`, so well-behaved client
 
 ## Enforcement
 
-- **Static check**: `scripts/check_mcp_list_types.py` scans every router and fails on bare `list[str]`. Runs automatically via `make check` (CI and pre-push).
 - **Contract tests**: `tests/test_mcp_list_coercion.py` pins the behavior of the aliases across all 6 known input shapes. Any regression in the `BeforeValidator` breaks CI.
+
+Note: `scripts/check_mcp_list_types.py` was removed during the June 2026 upstream adoption. The contract test suite is now the sole automated enforcement gate.
 
 ## Adding New Coerced Types
 
@@ -59,18 +60,16 @@ OptionalIntList = Annotated[list[int] | None, BeforeValidator(_coerce_json_list)
 
 The `_coerce_json_list` validator is element-type-agnostic — Pydantic's downstream validation handles per-element coercion (`"1"` → `1`). Add parametrized tests to `tests/test_mcp_list_coercion.py` for the new alias.
 
-Then update `scripts/check_mcp_list_types.py` so it also flags bare `list[int]` etc. — the script currently only scans for `list[str]` because that was the only known vector. Extend `_is_list_str_annotation` or generalize it if you add multiple coerced types.
-
 ## Exempt Code
 
-These are intentionally **not** scanned by the check script because they do not go through FastMCP's signature-based validation:
+These router types do not go through FastMCP's signature-based validation and are not affected by this constraint:
 
-- **`screening_parallel.py`** — FastAPI router with Pydantic `BaseModel` request bodies. FastAPI deserializes JSON arrays natively.
 - **`performance.py`** — FastAPI router with `Field`-annotated body models.
 - **Any `dataclass` field** — not a function parameter.
 
-If you convert one of those FastAPI endpoints into an MCP tool, remove it from the `FASTAPI_ONLY` set in `scripts/check_mcp_list_types.py`.
+Note: `screening_parallel.py` was removed during the June 2026 upstream adoption.
 
 ## History
 
-- **2026-04-14** — `get_upcoming_catalysts` in `watchlist.py` failed with `list_type` error when Claude Desktop stringified `["ANET","MRVL"]`. Investigation revealed 10 other latent call sites and one pre-existing manual fix in `compare_strategies` (`backtesting.py`). Unified into the shared aliases. This runbook and the enforcement script were added to prevent recurrence.
+- **2026-04-14** — `get_upcoming_catalysts` in `watchlist.py` failed with `list_type` error when Claude Desktop stringified `["ANET","MRVL"]`. Investigation revealed 10 other latent call sites and one pre-existing manual fix in `compare_strategies` (`backtesting.py`). Unified into the shared aliases. This runbook was added to prevent recurrence.
+- **2026-06-11** — `check_mcp_list_types.py` and `screening_parallel.py` removed as part of upstream adoption cleanup.
