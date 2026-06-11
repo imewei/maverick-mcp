@@ -56,7 +56,7 @@ class TavilySearchProvider(WebSearchProvider):
             )
             return self._process_results(response.get("results", []))
 
-        return await circuit_breaker.call(_search, timeout=timeout)
+        return await asyncio.wait_for(circuit_breaker.call(_search), timeout=timeout)
 
     def _process_results(
         self, results: Iterable[dict[str, Any]]
