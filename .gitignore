@@ -96,3 +96,12 @@ graphify-out/.graphify_*.json
 graphify-out/.graphify_*.txt
 graphify-out/.obsidian/
 graphify-out/_COMMUNITY_*.md
+
+# Claude Code worktrees, session state, and plugin runtime files
+.claude/
+
+# Local research and session logs
+.research-log.jsonl
+
+# Test fixture data (local, not for source control)
+tests/data/
