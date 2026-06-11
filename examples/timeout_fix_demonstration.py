@@ -36,7 +36,10 @@ def demonstrate_timeout_improvements():
 
     # Create test provider to demonstrate calculations
     class DemoProvider(WebSearchProvider):
+        """Minimal provider stub for demonstrating timeout calculations."""
+
         async def search(self, query, num_results=10, timeout_budget=None):
+            """Return empty results for demonstration purposes."""
             return []
 
     provider = DemoProvider(api_key="demo")
