@@ -78,7 +78,6 @@ dependencies = [
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",
     "vcrpy>=7.0.0",
-    "httpx2>=2.4.0",
 ]
 
 [project.optional-dependencies]
@@ -197,6 +196,12 @@ filterwarnings = [
     # testcontainer fixtures; upstream migration path is open. Re-evaluate when
     # we bump testcontainers.
     "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
+    # Starlette 1.x TestClient prefers httpx2 over httpx 0.x. We suppress
+    # this warning rather than adding httpx2 as a dependency: httpx2 was
+    # published on 2026-06-11 (same day as starlette 1.3.0) and its
+    # provenance has not yet been independently verified. Remove this line
+    # once httpx2 is confirmed legitimate and widely adopted upstream.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
 ]
 
 [tool.ruff]
