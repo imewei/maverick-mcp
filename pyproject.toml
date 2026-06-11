@@ -78,6 +78,7 @@ dependencies = [
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",
     "vcrpy>=7.0.0",
+    "httpx2>=2.4.0",
 ]
 
 [project.optional-dependencies]
