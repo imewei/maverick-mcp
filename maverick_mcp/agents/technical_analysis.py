@@ -251,6 +251,7 @@ Remember to:
                 circuit_breaker = await circuit_manager.get_or_create("technical")
 
                 async def get_levels():
+                    """Invoke the support/resistance tool for the current symbol."""
                     return await sr_tool.ainvoke(
                         {
                             "symbol": state["symbol"],
@@ -298,6 +299,7 @@ Remember to:
                 circuit_breaker = await circuit_manager.get_or_create("technical")
 
                 async def detect():
+                    """Invoke the pattern detection tool for the current symbol."""
                     return await pattern_tool.ainvoke(
                         {
                             "symbol": state["symbol"],
@@ -345,6 +347,7 @@ Remember to:
                 indicators = state.get("indicators", ["RSI", "MACD", "BB"])
 
                 async def get_indicators():
+                    """Invoke the technical indicators tool for the current symbol."""
                     return await indicators_tool.ainvoke(
                         {
                             "symbol": state["symbol"],

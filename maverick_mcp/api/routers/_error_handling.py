@@ -27,7 +27,9 @@ class _LoggerLike(Protocol):
     """Duck-typed logger so callers can pass ``logging.Logger`` or the
     project's ``RequestContextLogger`` wrapper without a cast."""
 
-    def exception(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def exception(self, msg: object, *args: object, **kwargs: object) -> None:
+        """Log a message at ERROR level with exception traceback attached."""
+        ...
 
 
 # Types that represent caller mistakes (bad input) — safe to echo the

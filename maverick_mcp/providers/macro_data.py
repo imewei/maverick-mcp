@@ -186,6 +186,7 @@ class MacroDataProvider:
             return {"current": 0.0, "previous": 0.0}
 
     def get_unemployment_rate(self):
+        """Fetch the current and previous US unemployment rate from FRED."""
         try:
             # Get recent unemployment data
             end_date = datetime.now(UTC)

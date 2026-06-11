@@ -51,6 +51,8 @@ class ConfigurationFactory:
 
         # Create a test implementation that uses safe defaults
         class TestConfigurationProvider:
+            """Configuration provider with safe defaults for testing."""
+
             def __init__(self, overrides: dict[str, str] | None = None):
                 self._overrides = overrides or {}
                 self._defaults = {
@@ -70,29 +72,36 @@ class ConfigurationFactory:
                 }
 
             def get_database_url(self) -> str:
+                """Return the database URL, defaulting to in-memory SQLite."""
                 return self._overrides.get(
                     "DATABASE_URL", self._defaults["DATABASE_URL"]
                 )
 
             def get_redis_host(self) -> str:
+                """Return the Redis host."""
                 return self._overrides.get("REDIS_HOST", self._defaults["REDIS_HOST"])
 
             def get_redis_port(self) -> int:
+                """Return the Redis port number."""
                 return int(
                     self._overrides.get("REDIS_PORT", self._defaults["REDIS_PORT"])
                 )
 
             def get_redis_db(self) -> int:
+                """Return the Redis database index."""
                 return int(self._overrides.get("REDIS_DB", self._defaults["REDIS_DB"]))
 
             def get_redis_password(self) -> str | None:
+                """Return the Redis password, or None if not set."""
                 password = self._overrides.get("REDIS_PASSWORD", "")
                 return password if password else None
 
             def get_redis_ssl(self) -> bool:
+                """Return whether Redis SSL is enabled."""
                 return self._overrides.get("REDIS_SSL", "false").lower() == "true"
 
             def is_cache_enabled(self) -> bool:
+                """Return whether caching is enabled (disabled by default in tests)."""
                 return (
                     self._overrides.get(
                         "CACHE_ENABLED", self._defaults["CACHE_ENABLED"]
@@ -101,20 +110,25 @@ class ConfigurationFactory:
                 )
 
             def get_cache_ttl(self) -> int:
+                """Return the cache TTL in seconds (defaults to 300 for tests)."""
                 return int(
                     self._overrides.get("CACHE_TTL_SECONDS", "300")
                 )  # 5 minutes for tests
 
             def get_fred_api_key(self) -> str:
+                """Return the FRED API key."""
                 return self._overrides.get("FRED_API_KEY", "")
 
             def get_external_api_key(self) -> str:
+                """Return the external Capital Companion API key."""
                 return self._overrides.get("CAPITAL_COMPANION_API_KEY", "")
 
             def get_tiingo_api_key(self) -> str:
+                """Return the Tiingo API key."""
                 return self._overrides.get("TIINGO_API_KEY", "")
 
             def is_auth_enabled(self) -> bool:
+                """Return whether authentication is enabled (disabled by default in tests)."""
                 return (
                     self._overrides.get(
                         "AUTH_ENABLED", self._defaults["AUTH_ENABLED"]
@@ -123,26 +137,31 @@ class ConfigurationFactory:
                 )
 
             def get_jwt_secret_key(self) -> str:
+                """Return the JWT secret key."""
                 return self._overrides.get(
                     "JWT_SECRET_KEY", self._defaults["JWT_SECRET_KEY"]
                 )
 
             def get_log_level(self) -> str:
+                """Return the logging level."""
                 return self._overrides.get("LOG_LEVEL", self._defaults["LOG_LEVEL"])
 
             def is_development_mode(self) -> bool:
+                """Return True when the environment is development or test."""
                 env = self._overrides.get(
                     "ENVIRONMENT", self._defaults["ENVIRONMENT"]
                 ).lower()
                 return env in ("development", "dev", "test")
 
             def is_production_mode(self) -> bool:
+                """Return True when the environment is production."""
                 env = self._overrides.get(
                     "ENVIRONMENT", self._defaults["ENVIRONMENT"]
                 ).lower()
                 return env in ("production", "prod")
 
             def get_request_timeout(self) -> int:
+                """Return the HTTP request timeout in seconds."""
                 return int(
                     self._overrides.get(
                         "REQUEST_TIMEOUT", self._defaults["REQUEST_TIMEOUT"]
@@ -150,16 +169,19 @@ class ConfigurationFactory:
                 )
 
             def get_max_retries(self) -> int:
+                """Return the maximum number of request retries."""
                 return int(
                     self._overrides.get("MAX_RETRIES", self._defaults["MAX_RETRIES"])
                 )
 
             def get_pool_size(self) -> int:
+                """Return the database connection pool size."""
                 return int(
                     self._overrides.get("DB_POOL_SIZE", self._defaults["DB_POOL_SIZE"])
                 )
 
             def get_max_overflow(self) -> int:
+                """Return the maximum overflow connections beyond pool_size."""
                 return int(
                     self._overrides.get(
                         "DB_MAX_OVERFLOW", self._defaults["DB_MAX_OVERFLOW"]
@@ -167,17 +189,38 @@ class ConfigurationFactory:
                 )
 
             def get_config_value(self, key: str, default=None):
+                """Retrieve a configuration value by key.
+
+                Args:
+                    key: Configuration key to look up.
+                    default: Value to return when the key is absent.
+
+                Returns:
+                    The override value, the default value, or ``default``.
+                """
                 return self._overrides.get(key, self._defaults.get(key, default))
 
             def set_config_value(self, key: str, value) -> None:
+                """Set a configuration override by key.
+
+                Args:
+                    key: Configuration key to set.
+                    value: Value to store; will be coerced to ``str``.
+                """
                 self._overrides[key] = str(value)
 
             def get_all_config(self) -> dict[str, str]:
+                """Return a merged copy of defaults and overrides.
+
+                Returns:
+                    Mapping of all configuration keys to their effective values.
+                """
                 config = self._defaults.copy()
                 config.update(self._overrides)
                 return config
 
             def reload_config(self) -> None:
+                """No-op reload; test config is static after construction."""
                 pass  # No-op for test config
 
         return TestConfigurationProvider(overrides)

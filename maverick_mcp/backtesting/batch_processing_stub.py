@@ -71,6 +71,7 @@ class VectorBTEngineStub(BatchProcessingStub):
         if name.startswith("batch") or name in ["run_backtest", "optimize_strategy"]:
 
             async def stub_method(*args, **kwargs):
+                """Raise ImportError to indicate missing VectorBT dependency."""
                 raise ImportError(
                     f"Method {name} requires VectorBT and other dependencies"
                 )

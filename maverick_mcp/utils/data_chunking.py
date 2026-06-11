@@ -610,6 +610,7 @@ def memory_efficient_groupby(
     results = []
 
     def process_chunk(chunk):
+        """Group the chunk by the target column and apply the aggregation function."""
         return chunk.groupby(group_col).apply(agg_func).reset_index()
 
     results = chunker.process_in_chunks(df, process_chunk)

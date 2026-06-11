@@ -29,23 +29,29 @@ except ImportError:
             pass
 
         def inc(self, *args, **kwargs):
+            """No-op stub for Counter.inc when Prometheus is unavailable."""
             pass
 
         def observe(self, *args, **kwargs):
+            """No-op stub for Histogram.observe when Prometheus is unavailable."""
             pass
 
         def set(self, *args, **kwargs):
+            """No-op stub for Gauge.set when Prometheus is unavailable."""
             pass
 
         def dec(self, *args, **kwargs):
+            """No-op stub for Gauge.dec when Prometheus is unavailable."""
             pass
 
         def labels(self, *args, **kwargs):
+            """Return self so label-chained calls are also no-ops."""
             return self
 
     Counter = Gauge = Histogram = _MetricStub
 
     def generate_latest():
+        """Return an empty Prometheus text payload when the library is unavailable."""
         return b"# Prometheus not available"
 
 

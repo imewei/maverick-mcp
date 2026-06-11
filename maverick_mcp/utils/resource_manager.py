@@ -93,6 +93,7 @@ class ResourceManager:
         """Setup signal handlers for resource cleanup."""
 
         def signal_handler(signum, frame):
+            """Trigger full resource cleanup on SIGTERM or SIGINT."""
             logger.info(f"Received signal {signum}, performing cleanup")
             self.cleanup_all()
 
@@ -427,6 +428,7 @@ def monitor_async_task(task: asyncio.Task, name: str = "unknown"):
     """
 
     def task_done_callback(finished_task):
+        """Log task outcome and trigger emergency cleanup on failure."""
         if finished_task.exception():
             logger.error(f"Task {name} failed: {finished_task.exception()}")
         else:

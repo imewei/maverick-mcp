@@ -157,6 +157,7 @@ async def parallel_screen_async(
 
     # Run screening in thread pool to avoid blocking
     def run_screening():
+        """Execute batch screening synchronously inside a thread-pool worker."""
         with ParallelScreener(max_workers=max_workers) as screener:
             return screener.screen_batch(symbols, screening_func, batch_size)
 

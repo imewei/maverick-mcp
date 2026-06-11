@@ -276,6 +276,7 @@ class HttpCircuitBreaker(EnhancedCircuitBreaker):
         """
 
         def make_request():
+            """Execute the HTTP request, applying the default timeout if none is given."""
             # Ensure timeout is set
             if "timeout" not in kwargs:
                 kwargs["timeout"] = self.config.timeout_threshold

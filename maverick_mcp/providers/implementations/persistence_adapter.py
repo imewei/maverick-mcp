@@ -174,6 +174,7 @@ class SQLAlchemyPersistenceAdapter(IDataPersistence):
         if screening_type == "maverick":
             # Use the existing MaverickStocks query logic
             def get_maverick_results():
+                """Query bullish Maverick stocks ordered by combined score."""
                 query = session.query(MaverickStocks)
                 if min_score:
                     query = query.filter(MaverickStocks.combined_score >= min_score)
@@ -187,6 +188,7 @@ class SQLAlchemyPersistenceAdapter(IDataPersistence):
         elif screening_type == "bearish":
             # Use the existing MaverickBearStocks query logic
             def get_bear_results():
+                """Query bearish Maverick stocks ordered by score."""
                 query = session.query(MaverickBearStocks)
                 if min_score:
                     query = query.filter(MaverickBearStocks.score >= min_score)
@@ -200,6 +202,7 @@ class SQLAlchemyPersistenceAdapter(IDataPersistence):
         elif screening_type == "trending":
             # Use the existing SupplyDemandBreakoutStocks query logic
             def get_trending_results():
+                """Query supply/demand breakout stocks in confirmed uptrend, ordered by momentum score."""
                 query = session.query(SupplyDemandBreakoutStocks).filter(
                     SupplyDemandBreakoutStocks.close_price
                     > SupplyDemandBreakoutStocks.sma_50,
@@ -290,6 +293,7 @@ class SQLAlchemyPersistenceAdapter(IDataPersistence):
         loop = asyncio.get_event_loop()
 
         def get_symbols():
+            """Return distinct stock symbols that have price data in the database."""
             query = session.query(Stock.symbol).distinct()
             if limit:
                 query = query.limit(limit)

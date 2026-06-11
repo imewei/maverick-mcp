@@ -144,4 +144,6 @@ class CompleteTechnicalAnalysisDTO(BaseModel):
     )
 
     class Config:
+        """Pydantic config to serialize datetime fields as ISO 8601 strings."""
+
         json_encoders = {datetime: lambda v: v.isoformat()}

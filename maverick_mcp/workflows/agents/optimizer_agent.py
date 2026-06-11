@@ -479,6 +479,7 @@ class OptimizerAgent:
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def optimize_single_strategy(strategy: str) -> tuple[str, dict[str, Any]]:
+            """Optimize parameters for a single strategy, respecting the concurrency semaphore."""
             async with semaphore:
                 try:
                     optimization_config = self._get_optimization_config(

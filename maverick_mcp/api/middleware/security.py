@@ -17,6 +17,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add basic security headers to all responses."""
 
     async def dispatch(self, request: Request, call_next):
+        """Inject security headers into every HTTP response."""
         response = await call_next(request)
 
         # Basic security headers for personal use

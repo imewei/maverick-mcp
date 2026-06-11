@@ -397,6 +397,7 @@ async def check_and_report_anomalies():
 if __name__ == "__main__":
     # Run the demonstration
     async def main():
+        """Run monitoring demonstration and print a sample of Prometheus metrics."""
         await demonstrate_monitoring_integration()
         await check_and_report_anomalies()
 

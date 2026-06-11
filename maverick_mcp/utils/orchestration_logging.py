@@ -20,6 +20,8 @@ from typing import Any
 
 # Color codes for better readability in terminal
 class LogColors:
+    """ANSI escape codes for terminal colour formatting."""
+
     HEADER = "\033[95m"
     OKBLUE = "\033[94m"
     OKCYAN = "\033[96m"

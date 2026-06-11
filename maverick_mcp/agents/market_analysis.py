@@ -344,6 +344,7 @@ Remember to:
                 circuit_breaker = await circuit_manager.get_or_create("market_data")
 
                 async def get_breadth():
+                    """Invoke the market breadth tool for SPY."""
                     return await breadth_tool.ainvoke({"index": "SPY"})
 
                 breadth_data = await circuit_breaker.call(get_breadth)
@@ -389,6 +390,7 @@ Remember to:
                 circuit_breaker = await circuit_manager.get_or_create("market_data")
 
                 async def get_sectors():
+                    """Invoke the sector sentiment tool."""
                     return await sector_tool.ainvoke({})
 
                 sector_data = await circuit_breaker.call(get_sectors)
@@ -432,6 +434,7 @@ Remember to:
                 circuit_breaker = await circuit_manager.get_or_create("screening")
 
                 async def run_screen():
+                    """Invoke the selected screening tool with the configured result limit."""
                     return await screening_tool.ainvoke(
                         {"limit": state.get("max_results", 20)}
                     )

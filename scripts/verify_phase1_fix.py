@@ -63,6 +63,7 @@ def _find_recent_cached_row(session, ticker: str) -> tuple[date, float] | None:
 
 
 def main() -> int:
+    """Parse CLI arguments and verify the Phase 1 price-cache fix for the specified ticker."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--ticker",

@@ -35,6 +35,7 @@ class TavilySearchProvider(WebSearchProvider):
     async def search(
         self, query: str, num_results: int = 10, timeout_budget: float | None = None
     ) -> list[dict[str, Any]]:
+        """Execute a Tavily web search with circuit-breaker protection and adaptive timeout."""
         if not self.is_healthy():
             raise WebSearchError("Tavily provider disabled due to repeated failures")
 

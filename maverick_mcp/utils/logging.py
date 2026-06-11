@@ -122,21 +122,27 @@ class RequestContextLogger:
         self.logger.log(level, msg, *args, **kwargs)
 
     def debug(self, msg: str, *args, **kwargs):
+        """Log a message at DEBUG level with structured context."""
         self._log_with_context(logging.DEBUG, msg, *args, **kwargs)
 
     def info(self, msg: str, *args, **kwargs):
+        """Log a message at INFO level with structured context."""
         self._log_with_context(logging.INFO, msg, *args, **kwargs)
 
     def warning(self, msg: str, *args, **kwargs):
+        """Log a message at WARNING level with structured context."""
         self._log_with_context(logging.WARNING, msg, *args, **kwargs)
 
     def error(self, msg: str, *args, **kwargs):
+        """Log a message at ERROR level with structured context."""
         self._log_with_context(logging.ERROR, msg, *args, **kwargs)
 
     def critical(self, msg: str, *args, **kwargs):
+        """Log a message at CRITICAL level with structured context."""
         self._log_with_context(logging.CRITICAL, msg, *args, **kwargs)
 
     def exception(self, msg: str, *args, **kwargs):
+        """Log a message at ERROR level and attach the current exception traceback."""
         # Mirror ``logging.Logger.exception``: ERROR level with ``exc_info=True``
         # so the active traceback is attached. Without this the wrapper looked
         # API-compatible with ``logging.Logger`` but silently dropped tracebacks

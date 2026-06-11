@@ -138,6 +138,7 @@ def load_sample_data(quick: bool = False) -> bool:
             symbols = get_sp500_symbols()
 
         async def load_data():
+            """Load stock data for all symbols via the Tiingo data loader."""
             async with TiingoDataLoader() as loader:
                 loaded_count = await loader.load_stock_data(symbols)
                 return loaded_count
@@ -170,6 +171,7 @@ def run_sample_screening(quick: bool = False) -> bool:
         from maverick_mcp.data.models import MaverickStocks, bulk_insert_screening_data
 
         async def run_screening():
+            """Run Maverick and optionally full screening, persisting results to the database."""
             screener = StockScreener()
             today = datetime.now().date()
 

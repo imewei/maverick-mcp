@@ -109,6 +109,7 @@ class BatchProcessor:
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def process_with_semaphore(symbol: str):
+            """Acquire semaphore and delegate to the user-supplied async processor."""
             async with semaphore:
                 try:
                     return symbol, await async_processor_func(symbol)
@@ -234,6 +235,7 @@ class StockDataBatchProcessor:
         with BatchProcessor(max_workers=5) as processor:
 
             def download_single(symbol: str) -> pd.DataFrame:
+                """Download stock data for a single symbol via the provider."""
                 try:
                     return self.provider.get_stock_data(symbol, start_date, end_date)
                 except Exception as e:
@@ -283,6 +285,7 @@ class StockDataBatchProcessor:
         with BatchProcessor(max_workers=10) as processor:
 
             def get_info(symbol: str) -> dict[str, Any]:
+                """Fetch yfinance info dict for a single symbol."""
                 try:
                     ticker = yf.Ticker(symbol)
                     return ticker.info
@@ -310,6 +313,7 @@ class StockDataBatchProcessor:
         with BatchProcessor(max_workers=8) as processor:
 
             def get_analysis(symbol: str) -> pd.DataFrame:
+                """Retrieve a DataFrame with technical indicators for a single symbol."""
                 try:
                     return get_stock_dataframe(symbol, days)
                 except Exception as e:

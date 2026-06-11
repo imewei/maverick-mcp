@@ -131,6 +131,7 @@ class ToolEstimationConfig(BaseModel):
     tool_estimates: dict[str, ToolEstimate] = Field(default_factory=dict)
 
     def model_post_init(self, _context: Any) -> None:  # noqa: D401
+        """Populate tool_estimates with defaults and normalise keys to lowercase."""
         if "tool_estimates" not in self.model_fields_set:
             self.tool_estimates = _build_default_estimates(self)
         else:
@@ -140,10 +141,26 @@ class ToolEstimationConfig(BaseModel):
             self.tool_estimates = normalised
 
     def get_estimate(self, tool_name: str) -> ToolEstimate:
+        """Return the estimate for the given tool, falling back to the unknown-tool default.
+
+        Args:
+            tool_name: Name of the tool to look up (case-insensitive).
+
+        Returns:
+            The matching ToolEstimate, or ``unknown_tool_estimate`` if not found.
+        """
         key = tool_name.lower()
         return self.tool_estimates.get(key, self.unknown_tool_estimate)
 
     def get_default_for_complexity(self, complexity: ToolComplexity) -> ToolEstimate:
+        """Return the baseline estimate corresponding to the given complexity bucket.
+
+        Args:
+            complexity: One of the ToolComplexity enum values.
+
+        Returns:
+            The default ToolEstimate for that complexity level.
+        """
         mapping = {
             ToolComplexity.SIMPLE: self.simple_default,
             ToolComplexity.STANDARD: self.standard_default,
@@ -153,6 +170,14 @@ class ToolEstimationConfig(BaseModel):
         return mapping[complexity]
 
     def get_tools_by_complexity(self, complexity: ToolComplexity) -> list[str]:
+        """Return a sorted list of tool names that match the given complexity level.
+
+        Args:
+            complexity: Complexity bucket to filter by.
+
+        Returns:
+            Sorted list of matching tool name strings.
+        """
         return sorted(
             [
                 name
@@ -162,6 +187,13 @@ class ToolEstimationConfig(BaseModel):
         )
 
     def get_summary_stats(self) -> dict[str, Any]:
+        """Compute aggregate statistics across all registered tool estimates.
+
+        Returns:
+            A dict with keys ``total_tools``, ``by_complexity``, ``avg_llm_calls``,
+            ``avg_tokens``, ``avg_confidence``, and ``basis_distribution``.
+            Returns an empty dict when no estimates are registered.
+        """
         if not self.tool_estimates:
             return {}
 
@@ -191,6 +223,20 @@ class ToolEstimationConfig(BaseModel):
     def should_alert(
         self, tool_name: str, actual_llm_calls: int, actual_tokens: int
     ) -> tuple[bool, str]:
+        """Determine whether actual usage warrants an alert against configured thresholds.
+
+        Checks both absolute thresholds (warning/critical) and variance relative to the
+        tool's estimate for LLM calls and tokens.
+
+        Args:
+            tool_name: Name of the tool whose usage is being evaluated.
+            actual_llm_calls: Observed number of LLM calls made by the tool.
+            actual_tokens: Observed total token count consumed by the tool.
+
+        Returns:
+            A tuple of (alert_triggered, message) where ``alert_triggered`` is True
+            when any threshold is breached and ``message`` summarises all violations.
+        """
         estimate = self.get_estimate(tool_name)
         thresholds = self.monitoring
         alerts: list[str] = []
@@ -517,6 +563,23 @@ class ToolCostEstimator:
         complexity: str = "moderate",
         additional_params: dict[str, Any] | None = None,
     ) -> int:
+        """Estimate the integer cost of a tool invocation using category and complexity.
+
+        Applies batch-size and time-sensitivity multipliers drawn from ``MULTIPLIERS``,
+        then adds a name-based surcharge for portfolio, screening, or real-time tools.
+
+        Args:
+            tool_name: Name of the tool; used to apply domain-specific surcharges.
+            category: Cost category key (e.g. ``"search"``, ``"analysis"``, ``"data"``,
+                ``"research"``).
+            complexity: Complexity level within the category (``"simple"``,
+                ``"moderate"``, ``"complex"``, or ``"very_complex"``).
+            additional_params: Optional mapping with keys ``batch_size`` (int) and
+                ``time_sensitivity`` (``"normal"``, ``"urgent"``, or ``"real_time"``).
+
+        Returns:
+            An integer cost value of at least 1.
+        """
         additional_params = additional_params or {}
         base_cost = cls.BASE_COSTS.get(category, {}).get(complexity, 3)
 

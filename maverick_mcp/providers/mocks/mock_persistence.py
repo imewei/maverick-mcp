@@ -18,12 +18,15 @@ class MockSession:
         self.rolled_back = False
 
     def close(self):
+        """Mark the session as closed."""
         self.closed = True
 
     def commit(self):
+        """Mark the session as committed."""
         self.committed = True
 
     def rollback(self):
+        """Mark the session as rolled back."""
         self.rolled_back = True
 
 

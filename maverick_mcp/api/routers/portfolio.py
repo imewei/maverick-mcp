@@ -377,6 +377,7 @@ def compare_tickers(
 
         # Rank by performance
         def get_performance(ticker: str) -> float:
+            """Return the price-change percentage for a ticker from its comparison results."""
             ticker_result = results[ticker]
             assert isinstance(ticker_result, dict)
             perf_dict = ticker_result["performance"]
@@ -384,6 +385,7 @@ def compare_tickers(
             return float(perf_dict["price_change_pct"])
 
         def get_trend(ticker: str) -> float:
+            """Return the trend-strength score for a ticker from its comparison results."""
             ticker_result = results[ticker]
             assert isinstance(ticker_result, dict)
             tech_dict = ticker_result["technical"]

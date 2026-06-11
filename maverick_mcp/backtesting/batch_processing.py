@@ -249,6 +249,7 @@ class BatchProcessingMixin:
         semaphore = asyncio.BoundedSemaphore(max_workers)
 
         async def limited_optimization(task):
+            """Acquire semaphore slot before awaiting an optimization task."""
             async with semaphore:
                 return await task
 

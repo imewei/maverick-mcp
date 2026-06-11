@@ -410,6 +410,7 @@ async def warm_cache_on_startup():
 if __name__ == "__main__":
     # Example usage
     async def main():
+        """Run a full cache warm-up cycle and shut down the warmer on completion."""
         warmer = CacheWarmer()
         try:
             await warmer.run_full_warmup()

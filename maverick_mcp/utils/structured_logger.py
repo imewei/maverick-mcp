@@ -840,6 +840,7 @@ class LogLevelCounterFilter(logging.Filter):
     """Filter to count log levels for dashboard metrics."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Increment the per-level counter and allow all records to pass."""
         global _log_level_counts
         _log_level_counts[record.levelname] = (
             _log_level_counts.get(record.levelname, 0) + 1

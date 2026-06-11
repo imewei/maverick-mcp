@@ -688,6 +688,7 @@ class TiingoDataLoader:
             semaphore = asyncio.Semaphore(concurrent_limit)
 
             async def process_with_semaphore(symbol):
+                """Process a single symbol while holding the rate-limiting semaphore."""
                 async with semaphore:
                     return await self.process_symbol(
                         session,

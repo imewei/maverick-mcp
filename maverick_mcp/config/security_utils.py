@@ -28,6 +28,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         self.security_config = security_config or get_security_config()
 
     async def dispatch(self, request: Request, call_next):
+        """Inject security headers into every outgoing response."""
         response = await call_next(request)
 
         # Add security headers

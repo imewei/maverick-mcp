@@ -168,6 +168,7 @@ def register_signal_tools(mcp: FastMCP) -> None:
             provider = EnhancedStockDataProvider()
 
             async def data_fetcher(ticker: str, days: int = 60) -> pd.DataFrame:
+                """Fetch OHLCV price data for a ticker and normalise column names to lowercase."""
                 loop = asyncio.get_running_loop()
                 df = await loop.run_in_executor(
                     None,

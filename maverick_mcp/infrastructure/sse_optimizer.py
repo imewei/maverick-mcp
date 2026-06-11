@@ -29,6 +29,7 @@ class SSEStabilityMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        """Add SSE keepalive and CORS headers for stable event-stream connections."""
         # Add SSE-specific headers for stability
         response = await call_next(request)
 

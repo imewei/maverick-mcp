@@ -248,25 +248,37 @@ class FastMCPProtocol(Protocol):
     fastapi_app: FastAPI | None
     dependencies: list[Any]
 
-    def add_middleware(self, middleware: Middleware) -> None: ...
+    def add_middleware(self, middleware: Middleware) -> None:
+        """Register ASGI middleware with the underlying FastAPI application."""
+        ...
 
     def resource(
         self, uri: str
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Return a decorator that exposes a function as an MCP resource at *uri*."""
+        ...
 
     def event(
         self, name: str
-    ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]: ...
+    ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
+        """Return a decorator that registers an async handler for the named MCP lifecycle event."""
+        ...
 
     def prompt(
         self, name: str | None = None, *, description: str | None = None
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Return a decorator that registers a function as a named MCP prompt template."""
+        ...
 
     def tool(
         self, name: str | None = None, *, description: str | None = None
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Return a decorator that exposes a function as a callable MCP tool."""
+        ...
 
-    def run(self, *args: Any, **kwargs: Any) -> None: ...
+    def run(self, *args: Any, **kwargs: Any) -> None:
+        """Start the MCP server, blocking until the process exits."""
+        ...
 
 
 _use_stderr = "--transport" in sys.argv and "stdio" in sys.argv
@@ -1756,6 +1768,7 @@ if __name__ == "__main__":
 
     # Initialize performance systems and health monitoring
     async def init_systems():
+        """Initialize performance systems and wire cross-domain event subscriptions."""
         logger.info("Initializing performance optimization systems...")
         try:
             performance_status = await initialize_performance_systems()
@@ -1777,12 +1790,14 @@ if __name__ == "__main__":
             _reg.register("regime_detector", RegimeDetector())
 
             async def on_signal_for_risk(topic, data):
+                """Forward a triggered signal event to the risk subsystem logger."""
                 logger.debug(
                     "Risk: signal event for %s",
                     data.get("ticker") if data else "unknown",
                 )
 
             async def on_screening_change(topic, data):
+                """Log a screening entry or exit event for audit purposes."""
                 logger.debug(
                     "Screening change: %s %s",
                     data.get("change_type", "") if data else "",
@@ -1790,6 +1805,7 @@ if __name__ == "__main__":
                 )
 
             async def on_regime_change(topic, data):
+                """Log a market-regime transition with the detected regime and confidence score."""
                 logger.info(
                     "Regime changed: %s (confidence: %s)",
                     data.get("regime") if data else "unknown",
@@ -1810,6 +1826,7 @@ if __name__ == "__main__":
 
     # Initialize connection management and transport optimizations
     async def init_connection_management():
+        """Set up the connection manager and apply transport-level optimizations."""
         global connection_manager
 
         # Initialize connection manager (removed for linting)

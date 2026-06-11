@@ -136,14 +136,17 @@ class QueryOptimizer:
         # Add connection pool event listeners for monitoring
         @event.listens_for(engine, "connect")
         def receive_connect(dbapi_connection, connection_record):
+            """Increment active connection count on new DBAPI connection."""
             self._connection_pool_stats["active_connections"] += 1
 
         @event.listens_for(engine, "checkout")
         def receive_checkout(dbapi_connection, connection_record, connection_proxy):
+            """Increment checked-out counter when a connection is borrowed from the pool."""
             self._connection_pool_stats["checked_out"] += 1
 
         @event.listens_for(engine, "checkin")
         def receive_checkin(dbapi_connection, connection_record):
+            """Decrement checked-out counter when a connection is returned to the pool."""
             self._connection_pool_stats["checked_out"] -= 1
 
     def create_bulk_insert_method(self):

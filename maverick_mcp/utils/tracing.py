@@ -70,9 +70,11 @@ except ImportError:
     # Create stub classes for when OpenTelemetry is not available
     class _TracerStub:
         def start_span(self, name: str, **kwargs):
+            """Return a no-op span stub when OpenTelemetry is unavailable."""
             return _SpanStub()
 
         def start_as_current_span(self, name: str, **kwargs):
+            """Return a no-op span stub used as a context manager."""
             return _SpanStub()
 
     class _SpanStub:
@@ -83,19 +85,24 @@ except ImportError:
             pass
 
         def set_attribute(self, key: str, value: Any):
+            """No-op attribute setter for the stub span."""
             pass
 
         def set_status(self, status):
+            """No-op status setter for the stub span."""
             pass
 
         def record_exception(self, exception: Exception):
+            """No-op exception recorder for the stub span."""
             pass
 
         def add_event(self, name: str, attributes: dict[str, Any] | None = None):
+            """No-op event recorder for the stub span."""
             pass
 
     # Create stub types for type annotations
     class TracerProvider:
+        """Stub TracerProvider used when the opentelemetry-sdk package is absent."""
         pass
 
     trace = type("trace", (), {"get_tracer": lambda name: _TracerStub()})()

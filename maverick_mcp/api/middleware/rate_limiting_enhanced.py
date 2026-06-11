@@ -55,6 +55,14 @@ class EndpointClassification:
 
     @staticmethod
     def classify_endpoint(path: str) -> RateLimitTier:
+        """Map a request path to its corresponding rate limit tier.
+
+        Args:
+            path: The URL path of the incoming request.
+
+        Returns:
+            The ``RateLimitTier`` that applies to the given path.
+        """
         normalized = path.lower()
         if normalized in {
             "/health",
@@ -104,6 +112,17 @@ class RateLimitConfig:
     def limit_for(
         self, tier: RateLimitTier, *, authenticated: bool, role: str | None = None
     ) -> int:
+        """Return the effective per-window request limit for a tier and user context.
+
+        Args:
+            tier: The rate limit tier of the endpoint being accessed.
+            authenticated: Whether the caller has a verified user identity.
+            role: Optional role string (``"premium"`` or ``"enterprise"``) that
+                applies a multiplier to the base limit.
+
+        Returns:
+            The maximum number of requests allowed within the configured window.
+        """
         limit = self.data_limit
         if tier == RateLimitTier.PUBLIC:
             limit = self.public_limit
@@ -158,6 +177,24 @@ class RateLimiter:
         window_seconds: int,
         strategy: RateLimitStrategy | None = None,
     ) -> tuple[bool, dict[str, Any]]:
+        """Check whether a request is within the allowed rate limit.
+
+        Falls back to an in-process sliding-window counter when Redis is
+        unavailable.
+
+        Args:
+            key: Unique identifier for the caller (user ID or client IP).
+            tier: The rate limit tier that determines the namespace.
+            limit: Maximum number of requests permitted in the window.
+            window_seconds: Duration of the rate limit window in seconds.
+            strategy: Override the default ``RateLimitStrategy``; uses the
+                config default when ``None``.
+
+        Returns:
+            A two-tuple of ``(allowed, info)`` where *allowed* is ``True``
+            when the request should proceed and *info* is a dict containing
+            ``limit``, ``remaining``, ``retry_after``, and strategy metadata.
+        """
         strategy = strategy or self.config.default_strategy
         client = await redis_manager.get_client()
         tiered_key = self._tiered_key(tier, key)
@@ -183,12 +220,14 @@ class RateLimiter:
         return await self._check_fixed_window(client, key, tier, limit, window_seconds)
 
     def record_violation(self, key: str, *, tier: RateLimitTier | None = None) -> None:
+        """Increment the violation counter for the given key and optional tier."""
         namespaced_key = self._tiered_key(tier, key) if tier else key
         self._violations[namespaced_key] += 1
 
     def get_violation_count(
         self, key: str, *, tier: RateLimitTier | None = None
     ) -> int:
+        """Return the accumulated violation count for the given key and optional tier."""
         namespaced_key = self._tiered_key(tier, key) if tier else key
         return self._violations.get(namespaced_key, 0)
 
@@ -352,6 +391,12 @@ class RateLimiter:
         return True, info
 
     async def cleanup_old_data(self, *, older_than_hours: int = 24) -> None:
+        """Delete stale rate limit entries from Redis older than the given age.
+
+        Args:
+            older_than_hours: Entries older than this many hours are removed.
+                Defaults to 24 hours.
+        """
         client = await redis_manager.get_client()
         if client is None:
             return
@@ -392,6 +437,22 @@ class EnhancedRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:  # type: ignore[override]
+        """Enforce rate limits and attach rate limit headers to each response.
+
+        Public-tier endpoints bypass rate limiting entirely. For all other
+        endpoints the caller is identified by user ID or client IP, the
+        applicable limit is computed, and a 429 response with a
+        ``Retry-After`` header is returned when the limit is exceeded.
+
+        Args:
+            request: The incoming ASGI request.
+            call_next: Callable that forwards the request to the next middleware
+                or route handler.
+
+        Returns:
+            The downstream response augmented with ``X-RateLimit-*`` headers,
+            or a 429 ``JSONResponse`` when the rate limit is exceeded.
+        """
         path = request.url.path
         tier = EndpointClassification.classify_endpoint(path)
         if tier == RateLimitTier.PUBLIC:
