@@ -42,6 +42,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+      # No uv sync needed: check_docs_catalog.py uses stdlib only
       - name: Check docs catalog
         run: make docs-check
 

@@ -33,6 +33,8 @@ NON_DOC_TEXT = {
 # Fork-specific: files the catalog marks "deleted" but that still exist on disk
 # in this fork.  Listed here so the catalog check does not flag them as
 # "outside approved locations" — they ARE referenced in docs/CATALOG.md.
+# Authority: keep this set in sync with the "Deleted Or Consolidated" section
+# in docs/CATALOG.md; every entry here must appear there and vice versa.
 CATALOG_DELETED = {
     "DATABASE_SETUP.md",
     "PLANS.md",
