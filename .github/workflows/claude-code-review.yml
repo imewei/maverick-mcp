@@ -4,6 +4,8 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+permissions: {}
+
 jobs:
   claude-review:
     # Forked pull_request runs do not receive repository secrets/OIDC, so keep
