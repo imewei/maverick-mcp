@@ -27,11 +27,10 @@ except Exception:  # noqa: BLE001 — best-effort pre-import; any failure is non
     pass
 
 import sys
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -50,10 +49,7 @@ except ImportError:
 # Add the parent directory to the path to enable imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from maverick_mcp.api.api_server import create_api_app
-
 # Import all models to ensure they're registered with Base
-from maverick_mcp.data.models import get_db
 from maverick_mcp.database.base import Base
 
 
@@ -289,48 +285,10 @@ def setup_test_env(database_url: str, redis_url: str):
     os.environ.pop("REDIS_URL", None)
 
 
-# FastAPI test client fixtures
-@pytest.fixture(scope="function")
-async def app(db_session: Session):
-    """Create a FastAPI app instance for testing."""
-    app = create_api_app()
-
-    # Override the database dependency
-    def override_get_db():
-        try:
-            yield db_session
-        finally:
-            pass
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    yield app
-
-    # Clean up overrides
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture(scope="function")
-async def client(app) -> AsyncGenerator[AsyncClient, None]:
-    """Create an async HTTP client for testing API endpoints."""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
-
-
 # Authentication fixtures (disabled for personal use)
 @pytest.fixture
-async def test_user(db_session: Session):
-    """Create a test user for authenticated scenarios (legacy billing disabled)."""
-    # Auth disabled for personal use - return None
-    # All auth-related imports and functionality removed
-    return None
-
-
-@pytest.fixture
-async def auth_headers(client: AsyncClient, test_user):
-    """Get authentication headers for a test user (disabled for personal use)."""
-    # Auth disabled for personal use - return empty headers
+async def auth_headers():
+    """Get authentication headers (disabled for personal use)."""
     return {}
 
 
