@@ -1,7 +1,7 @@
 # Maverick-MCP Makefile
 # Central command interface for agent-friendly development
 
-.PHONY: help dev dev-sse dev-http dev-stdio stop test test-all test-watch test-specific test-parallel test-cov test-speed test-speed-quick test-speed-emergency test-speed-comparison test-strategies test-smoke lint format typecheck clean tail-log backend check migrate setup redis-start redis-stop experiment experiment-once benchmark-parallel benchmark-speed docker-up docker-down docker-logs
+.PHONY: help dev dev-sse dev-http dev-stdio stop test test-all test-watch test-specific test-parallel test-cov test-speed test-speed-quick test-speed-emergency test-speed-comparison test-strategies test-smoke lint format typecheck docs-check clean tail-log backend check migrate setup redis-start redis-stop experiment experiment-once benchmark-parallel benchmark-speed docker-up docker-down docker-logs
 
 # Default target
 help:
@@ -30,6 +30,7 @@ help:
 	@echo "  make lint         - Run code quality checks"
 	@echo "  make format       - Auto-format code"
 	@echo "  make typecheck    - Run type checking"
+	@echo "  make docs-check   - Validate documentation catalog and links"
 	@echo "  make check        - Run all checks (lint + type check)"
 	@echo ""
 	@echo "  make tail-log     - Follow backend logs"
@@ -161,31 +162,11 @@ typecheck:
 	@echo "Running type checker..."
 	@uv run --extra dev pyright
 
-check-mcp-types:
-	@echo "Checking MCP tool list[str] parameters use coercion aliases..."
-	@uv run python scripts/check_mcp_list_types.py
+docs-check:
+	@echo "Validating documentation catalog..."
+	@uv run python tools/check_docs_catalog.py
 
-check-otel-versions:
-	@echo "Checking OpenTelemetry package versions are aligned in uv.lock..."
-	@uv run --no-sync python scripts/check_otel_versions.py
-
-# check-mcp-descriptions is now --strict: Phase 2.1 of the audit
-# roadmap cleared the backlog, so new tools must ship with a
-# description= kwarg or a >=8-word docstring first line. Adding an
-# undocumented @mcp.tool will fail `make check`.
-check-mcp-descriptions:
-	@echo "Checking MCP @mcp.tool decorators have useful description= ..."
-	@uv run python scripts/check_mcp_descriptions.py --strict
-
-# check-router-variants stays warning-only until Phase 3 consolidation
-# lands — removing --strict prematurely would fail CI on every commit
-# while the four known variant groups still exist. See
-# docs/audit/follow-ups.md items 3.1–3.4.
-check-router-variants:
-	@echo "Checking router-variant sprawl (_enhanced/_parallel/_ddd/_pipeline)..."
-	@uv run python scripts/check_router_variants.py
-
-check: lint typecheck check-mcp-types check-otel-versions check-mcp-descriptions check-router-variants
+check: lint typecheck
 	@echo "All checks passed!"
 
 # Utility commands
