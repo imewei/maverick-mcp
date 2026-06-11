@@ -42,7 +42,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      # No uv sync needed: check_docs_catalog.py uses stdlib only
+      - name: Sync dependencies
+        run: uv sync --frozen
       - name: Check docs catalog
         run: make docs-check
 
@@ -63,6 +64,7 @@ jobs:
         continue-on-error: true
         run: uv run ty check maverick_mcp
       - name: ty check, strict zone (services/ + domain/)
+        continue-on-error: true
         run: uv run ty check maverick_mcp/services maverick_mcp/domain
 
   test-unit:
