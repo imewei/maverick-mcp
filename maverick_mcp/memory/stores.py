@@ -9,6 +9,7 @@ import json
 import logging
 import sqlite3
 import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -292,22 +293,42 @@ class UserMemoryStore(MemoryStore):
         return self.get(key)
 
 
+_SHARED_CONTEXT_MAX_SESSIONS = 100
+_SHARED_CONTEXT_TTL_SECONDS = 3600  # 1 hour
+
+
 class SharedAgentContext:
     """Cross-agent shared context for a coordination session.
 
     Allows agents to share findings during multi-agent execution,
     enabling later agents to build on earlier findings.
+
+    Sessions are evicted when they exceed TTL (1 hour) or when the
+    total count reaches the cap (100), using FIFO order.
     """
 
     def __init__(self):
-        self._contexts: dict[str, dict[str, Any]] = {}  # session_id -> context
+        # OrderedDict preserves insertion order for FIFO eviction.
+        self._contexts: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._lock = threading.Lock()
+
+    def _evict_stale(self) -> None:
+        """Evict TTL-expired sessions, then enforce the count cap. Must be called under lock."""
+        cutoff = (
+            datetime.now() - timedelta(seconds=_SHARED_CONTEXT_TTL_SECONDS)
+        ).isoformat()
+        stale = [sid for sid, ctx in self._contexts.items() if ctx["created_at"] < cutoff]
+        for sid in stale:
+            del self._contexts[sid]
+        while len(self._contexts) >= _SHARED_CONTEXT_MAX_SESSIONS:
+            self._contexts.popitem(last=False)  # drop oldest
 
     def create_session(self, session_id: str) -> None:
         """Initialize a new coordination session."""
         with self._lock:
             if session_id in self._contexts:
                 return  # Don't clobber existing session context
+            self._evict_stale()
             self._contexts[session_id] = {
                 "findings": [],  # List of agent findings
                 "metadata": {},  # Session metadata
@@ -323,6 +344,7 @@ class SharedAgentContext:
             ctx = self._contexts.get(session_id)
             if ctx is None:
                 # Auto-create session if it doesn't exist yet
+                self._evict_stale()
                 self._contexts[session_id] = {
                     "findings": [],
                     "metadata": {},

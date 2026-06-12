@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
@@ -476,6 +477,23 @@ Always adjust your recommendations to match this risk profile. Be explicit about
         """
         return BaseAgentState
 
+    def _cleanup_memory_saver_thread(self, session_id: str) -> None:
+        """Drop a completed thread's state from MemorySaver to prevent unbounded growth.
+
+        SqliteSaver persists to disk (no RAM concern); MemorySaver holds all
+        thread states in-process forever. Since each call uses a fresh UUID
+        thread_id with no resumption intent, we can safely drop it after use.
+        """
+        if not isinstance(self.checkpointer, MemorySaver):
+            return
+        storage = getattr(self.checkpointer, "storage", None)
+        if storage is None:
+            return
+        storage.pop(session_id, None)
+        writes = getattr(self.checkpointer, "writes", None)
+        if writes is not None:
+            writes.pop(session_id, None)
+
     async def ainvoke(self, query: str, session_id: str, **kwargs) -> dict[str, Any]:
         """
         Invoke the agent asynchronously.
@@ -506,6 +524,7 @@ Always adjust your recommendations to match this risk profile. Be explicit about
             config=config,
         )
 
+        self._cleanup_memory_saver_thread(session_id)
         return self._extract_response(result)
 
     def invoke(self, query: str, session_id: str, **kwargs) -> dict[str, Any]:
@@ -538,6 +557,7 @@ Always adjust your recommendations to match this risk profile. Be explicit about
             config=config,
         )
 
+        self._cleanup_memory_saver_thread(session_id)
         return self._extract_response(result)
 
     async def astream(
