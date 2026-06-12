@@ -143,10 +143,10 @@ class BatchProcessingMixin:
                                 logger.error(f"Batch failed fast on: {result.error}")
                                 break
 
-                    # Memory cleanup between chunks
+                    # Always collect between chunks; profiling stats only on request.
+                    gc.collect()
                     if getattr(self, "enable_memory_profiling", False):
                         cleanup_dataframes()
-                        gc.collect()
 
                 except Exception as e:
                     logger.error(f"Chunk processing failed: {e}")
