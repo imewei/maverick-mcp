@@ -136,6 +136,17 @@ class MemoryStore:
             self._conn.execute("DELETE FROM memory_store WHERE key = ?", (key,))
             self._conn.commit()
 
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __del__(self) -> None:
+        self.close()
+
     # ------------------------------------------------------------------ #
     # Public API (unchanged signatures)
     # ------------------------------------------------------------------ #
