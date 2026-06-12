@@ -520,7 +520,7 @@ class ExaSearchProvider(WebSearchProvider):
         params = {
             "query": query,
             "num_results": num_results,
-            "text": {"max_characters": 5000},  # Increased for financial content
+            "contents": {"text": {"maxCharacters": 5000}},  # Increased for financial content
         }
 
         # Strategy-specific optimizations
@@ -845,6 +845,7 @@ class ContentAnalyzer:
         Content to analyze:
         {content[:3000]}  # Limit content length
 
+        Analysis Focus: {analysis_focus}
         Focus Areas: {", ".join(persona_focus["keywords"])}
         Risk Focus: {persona_focus["risk_focus"]}
         Time Horizon: {persona_focus["time_horizon"]}
@@ -1050,7 +1051,8 @@ class ContentAnalyzer:
             if content:
                 try:
                     # Direct LLM call for test compatibility
-                    prompt = f"Analyze: {content[:500]}"
+                    focus_str = ", ".join(focus_areas) if focus_areas else "general insights"
+                    prompt = f"Analyze with focus on {focus_str}: {content[:500]}"
                     response = await self.llm.ainvoke(
                         [
                             SystemMessage(
@@ -1120,7 +1122,8 @@ class ContentAnalyzer:
             content = content_item
 
         try:
-            result = await self.analyze_content(content, "moderate")
+            analysis_focus = ", ".join(focus_areas) if focus_areas else "general"
+            result = await self.analyze_content(content, "moderate", analysis_focus)
             # Ensure test-compatible format
             if "credibility_score" in result and "credibility" not in result:
                 result["credibility"] = result["credibility_score"]
@@ -1278,7 +1281,7 @@ class DeepResearchAgent(PersonaAwareAgent):
         """Check if an insight is relevant for a given persona - used by tests."""
         # Simple implementation for test compatibility
         # In a real implementation, this would analyze the insight against persona characteristics
-        return True  # Default permissive approach as mentioned in test comments
+        return bool(insight) and bool(characteristics)  # Permissive: True for any non-empty inputs
 
     async def initialize(self) -> None:
         """Pre-initialize Exa search provider to eliminate lazy loading overhead during research."""
@@ -2694,7 +2697,7 @@ class DeepResearchAgent(PersonaAwareAgent):
 
         try:
             # Generate research tasks using task distributor
-            orchestration_logger.info("🎯 TASK_DISTRIBUTION_START")
+            orchestration_logger.info("🎯 TASK_DISTRIBUTION_START", timeframe=timeframe)
             research_tasks = self.task_distributor.distribute_research_tasks(
                 topic=topic, session_id=session_id, focus_areas=focus_areas
             )
