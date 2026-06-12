@@ -33,7 +33,7 @@ class StatusDashboard:
         self.alert_thresholds = {
             "cpu_usage": 80.0,
             "memory_usage": 85.0,
-            "disk_usage": 90.0,
+            "disk_usage": settings.health_disk_alert_threshold,
             "response_time_ms": 5000.0,
             "failure_rate": 0.1,
         }

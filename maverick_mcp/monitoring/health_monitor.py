@@ -247,8 +247,8 @@ class HealthMonitor:
             else:
                 self._high_memory_since = None
 
-            # Disk fills slowly — a single reading above 90% is already actionable.
-            if resource_usage.disk_percent > 90:
+            # Disk fills slowly — a single reading above threshold is already actionable.
+            if resource_usage.disk_percent > settings.health_disk_alert_threshold:
                 await self._handle_high_disk_usage(resource_usage.disk_percent)
 
         except Exception as e:
@@ -370,16 +370,27 @@ class HealthMonitor:
         self.alerts_sent[alert_key] = time.time()
 
     async def _handle_alert(self, alert: dict[str, Any]):
-        """Handle individual alert."""
+        """Handle individual alert with per-title throttling to avoid duplicate logs."""
         severity = alert.get("severity", "info")
+        title = alert.get("title", "Unknown")
 
-        # Log alert based on severity
+        # Throttle: skip if the same alert title was already logged recently.
+        # Critical alerts share the 30-minute window used by the direct resource
+        # checks (e.g. _handle_high_disk_usage) so both paths never double-log.
+        throttle_seconds = 1800 if severity == "critical" else 600
+        alert_key = f"dashboard_{title}"
+        last_sent = self.alerts_sent.get(alert_key)
+        if last_sent and (time.time() - last_sent) < throttle_seconds:
+            return
+
+        self.alerts_sent[alert_key] = time.time()
+
         if severity == "critical":
-            logger.error(f"Critical alert: {alert.get('title', 'Unknown')}")
+            logger.error(f"Critical alert: {title}")
         elif severity == "warning":
-            logger.warning(f"Warning alert: {alert.get('title', 'Unknown')}")
+            logger.warning(f"Warning alert: {title}")
         else:
-            logger.info(f"Info alert: {alert.get('title', 'Unknown')}")
+            logger.info(f"Info alert: {title}")
 
     async def _trigger_maintenance_alert(self):
         """Trigger alert for system maintenance needed."""

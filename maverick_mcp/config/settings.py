@@ -1004,12 +1004,6 @@ class Settings(BaseModel):
     data_limits: DataLimitsConfig = Field(
         default_factory=DataLimitsConfig, description="Data limits settings"
     )
-    agent: AgentConfig = Field(
-        default_factory=AgentConfig, description="Agent settings"
-    )
-    validation: ValidationConfig = Field(
-        default_factory=FinancialConfig, description="Financial calculation settings"
-    )
     performance: PerformanceConfig = Field(
         default_factory=PerformanceConfig, description="Performance settings"
     )
@@ -1034,6 +1028,14 @@ class Settings(BaseModel):
     )
     memory: MemoryConfig = Field(
         default_factory=MemoryConfig, description="Memory persistence settings"
+    )
+
+    # Health monitoring thresholds (overridable via env var)
+    health_disk_alert_threshold: float = Field(
+        default_factory=lambda: float(
+            os.getenv("HEALTH_DISK_ALERT_THRESHOLD", "90.0")
+        ),
+        description="Disk usage % above which a critical alert fires",
     )
 
 
