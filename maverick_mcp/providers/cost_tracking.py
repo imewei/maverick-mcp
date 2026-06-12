@@ -119,7 +119,11 @@ class CostAccumulator:
             self._current_day = today
             # Drop records from prior days to prevent unbounded growth.
             # Keep today's records (empty at rotation time) plus a hard cap.
-            self._records = [r for r in self._records if datetime.fromtimestamp(r.timestamp, tz=UTC).date() == today]
+            self._records = [
+                r
+                for r in self._records
+                if datetime.fromtimestamp(r.timestamp, tz=UTC).date() == today
+            ]
 
     def estimate_cost(
         self,

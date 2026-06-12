@@ -328,7 +328,9 @@ class SharedAgentContext:
         cutoff = (
             datetime.now() - timedelta(seconds=_SHARED_CONTEXT_TTL_SECONDS)
         ).isoformat()
-        stale = [sid for sid, ctx in self._contexts.items() if ctx["created_at"] < cutoff]
+        stale = [
+            sid for sid, ctx in self._contexts.items() if ctx["created_at"] < cutoff
+        ]
         for sid in stale:
             del self._contexts[sid]
         while len(self._contexts) >= _SHARED_CONTEXT_MAX_SESSIONS:

@@ -1032,9 +1032,7 @@ class Settings(BaseModel):
 
     # Health monitoring thresholds (overridable via env var)
     health_disk_alert_threshold: float = Field(
-        default_factory=lambda: float(
-            os.getenv("HEALTH_DISK_ALERT_THRESHOLD", "90.0")
-        ),
+        default_factory=lambda: float(os.getenv("HEALTH_DISK_ALERT_THRESHOLD", "90.0")),
         description="Disk usage % above which a critical alert fires",
     )
 
