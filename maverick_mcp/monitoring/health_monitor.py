@@ -8,7 +8,8 @@ alerting, and automatic recovery actions for the backtesting system.
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from collections import deque
+from datetime import UTC, datetime
 from typing import Any
 
 from maverick_mcp.config.settings import get_settings
@@ -41,7 +42,7 @@ class HealthMonitor:
         self.tasks = []
         self.alerts_sent = {}
         self.start_time = time.time()
-        self.health_history = []
+        self.health_history: deque = deque(maxlen=20_000)
         self.dashboard = get_status_dashboard()
         self.circuit_breaker_manager = get_circuit_breaker_manager()
         # Timestamps of the first breach in the current run of sustained-threshold
@@ -286,22 +287,13 @@ class HealthMonitor:
 
         self.health_history.append(health_record)
 
-        # Keep only last 24 hours of data
-        cutoff_time = timestamp - timedelta(hours=24)
-        self.health_history = [
-            record
-            for record in self.health_history
-            if datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
-            > cutoff_time
-        ]
-
     async def _analyze_health_trends(self, current_status: dict[str, Any]):
         """Analyze health trends and predict issues."""
         if len(self.health_history) < 10:
             return  # Not enough data for trend analysis
 
         # Analyze degradation trends
-        recent_records = self.health_history[-10:]  # Last 10 records
+        recent_records = list(self.health_history)[-10:]  # Last 10 records
 
         unhealthy_trend = sum(
             1

@@ -7,7 +7,8 @@ from all components and provides real-time metrics visualization data.
 
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from collections import deque
+from datetime import UTC, datetime
 from typing import Any
 
 from maverick_mcp.config.settings import get_settings
@@ -28,7 +29,7 @@ class StatusDashboard:
 
     def __init__(self):
         self.start_time = time.time()
-        self.historical_data = []
+        self.historical_data: deque = deque(maxlen=20_000)
         self.last_update = None
         self.alert_thresholds = {
             "cpu_usage": 80.0,
@@ -427,15 +428,6 @@ class StatusDashboard:
 
         self.historical_data.append(data_point)
 
-        # Clean up old data
-        cutoff_time = timestamp - timedelta(hours=HISTORICAL_DATA_RETENTION)
-        self.historical_data = [
-            point
-            for point in self.historical_data
-            if datetime.fromisoformat(point["timestamp"].replace("Z", "+00:00"))
-            > cutoff_time
-        ]
-
     def _get_historical_data(self) -> dict[str, Any]:
         """Get historical data for trending charts."""
         if not self.historical_data:
@@ -454,7 +446,7 @@ class StatusDashboard:
         }
 
         # Downsample data if we have too many points (keep last 100 points for visualization)
-        data = self.historical_data
+        data = list(self.historical_data)
         if len(data) > 100:
             step = len(data) // 100
             data = data[::step]
