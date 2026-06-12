@@ -98,9 +98,9 @@ class CircuitBreakerMetrics:
         """Initialize metrics with a time window."""
         self.window_size = window_size
         self.calls: deque[tuple[float, bool, float]] = (
-            deque()
+            deque(maxlen=1000)
         )  # (timestamp, success, duration)
-        self.state_changes: deque[tuple[float, CircuitState]] = deque()
+        self.state_changes: deque[tuple[float, CircuitState]] = deque(maxlen=1000)
         self._lock = threading.RLock()
 
     def record_call(self, success: bool, duration: float):
