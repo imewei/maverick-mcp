@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -112,10 +112,14 @@ class CostAccumulator:
         if today != self._current_day:
             logger.info(
                 f"Day rotated from {self._current_day} to {today}. "
-                f"Previous day total: ${self._daily_total:.4f}"
+                f"Previous day total: ${self._daily_total:.4f}, "
+                f"records retained: {len(self._records)}"
             )
             self._daily_total = 0.0
             self._current_day = today
+            # Drop records from prior days to prevent unbounded growth.
+            # Keep today's records (empty at rotation time) plus a hard cap.
+            self._records = [r for r in self._records if datetime.fromtimestamp(r.timestamp, tz=UTC).date() == today]
 
     def estimate_cost(
         self,

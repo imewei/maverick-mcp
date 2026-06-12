@@ -268,6 +268,7 @@ def _cleanup_expired_memory_cache():
         if "data" in entry and isinstance(entry["data"], pd.DataFrame):
             bytes_freed += entry["data"].memory_usage(deep=True).sum()
         del _memory_cache[k]
+        _cache_metadata.pop(k, None)
 
     # Calculate current memory usage
     current_memory_bytes = 0
@@ -300,6 +301,7 @@ def _cleanup_expired_memory_cache():
                     removed_memory += entry_size
                     bytes_freed += entry_size
                 del _memory_cache[k]
+                _cache_metadata.pop(k, None)
                 num_to_remove = max(num_to_remove, 1)
 
                 if removed_memory >= (current_memory_bytes - memory_limit_bytes):
@@ -310,6 +312,7 @@ def _cleanup_expired_memory_cache():
                 if "data" in v and isinstance(v["data"], pd.DataFrame):
                     bytes_freed += v["data"].memory_usage(deep=True).sum()
                 del _memory_cache[k]
+                _cache_metadata.pop(k, None)
 
         if num_to_remove > 0:
             logger.debug(
