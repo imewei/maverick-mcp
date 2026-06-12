@@ -86,6 +86,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=4.1.0",
     "pytest-xdist>=3.6.0",
+    "pytest-timeout>=0.5.0",
     "testcontainers[postgres,redis]>=4.5.0",
     "vcrpy>=6.0.1",
     "aiosqlite>=0.20.0",

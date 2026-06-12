@@ -32,7 +32,9 @@ class _RecordingApp:
         await send({"type": "http.response.body", "body": b"ok"})
 
 
-async def _drive(middleware: ShutdownGateMiddleware, scope: dict[str, Any]) -> list[dict[str, Any]]:
+async def _drive(
+    middleware: ShutdownGateMiddleware, scope: dict[str, Any]
+) -> list[dict[str, Any]]:
     sent: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:

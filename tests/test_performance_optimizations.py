@@ -131,7 +131,9 @@ class TestRequestCache:
             # Test cache set
             mock_client.set.return_value = True
             await cache.set("test_key", {"data": "value"}, ttl=60)
-            mock_client.set.assert_called_once_with("test_key", '{"data": "value"}', ex=60)
+            mock_client.set.assert_called_once_with(
+                "test_key", '{"data": "value"}', ex=60
+            )
 
     def test_cache_metrics(self):
         """Test cache metrics collection."""

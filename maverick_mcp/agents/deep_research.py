@@ -422,9 +422,7 @@ class ExaSearchProvider(WebSearchProvider):
                     )
 
                     # Call Exa search with optimized parameters
-                    exa_response = await async_exa_client.search(
-                        **search_params
-                    )
+                    exa_response = await async_exa_client.search(**search_params)
 
                     # Convert Exa response to standard format with enhanced metadata
                     results = []
@@ -520,7 +518,9 @@ class ExaSearchProvider(WebSearchProvider):
         params = {
             "query": query,
             "num_results": num_results,
-            "contents": {"text": {"maxCharacters": 5000}},  # Increased for financial content
+            "contents": {
+                "text": {"maxCharacters": 5000}
+            },  # Increased for financial content
         }
 
         # Strategy-specific optimizations
@@ -1051,7 +1051,9 @@ class ContentAnalyzer:
             if content:
                 try:
                     # Direct LLM call for test compatibility
-                    focus_str = ", ".join(focus_areas) if focus_areas else "general insights"
+                    focus_str = (
+                        ", ".join(focus_areas) if focus_areas else "general insights"
+                    )
                     prompt = f"Analyze with focus on {focus_str}: {content[:500]}"
                     response = await self.llm.ainvoke(
                         [
@@ -1281,7 +1283,9 @@ class DeepResearchAgent(PersonaAwareAgent):
         """Check if an insight is relevant for a given persona - used by tests."""
         # Simple implementation for test compatibility
         # In a real implementation, this would analyze the insight against persona characteristics
-        return bool(insight) and bool(characteristics)  # Permissive: True for any non-empty inputs
+        return bool(insight) and bool(
+            characteristics
+        )  # Permissive: True for any non-empty inputs
 
     async def initialize(self) -> None:
         """Pre-initialize Exa search provider to eliminate lazy loading overhead during research."""

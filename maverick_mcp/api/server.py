@@ -252,9 +252,7 @@ class FastMCPProtocol(Protocol):
         """Register ASGI middleware with the underlying FastAPI application."""
         ...
 
-    def resource(
-        self, uri: str
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def resource(self, uri: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Return a decorator that exposes a function as an MCP resource at *uri*."""
         ...
 

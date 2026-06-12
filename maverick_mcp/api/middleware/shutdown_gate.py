@@ -48,9 +48,7 @@ class ShutdownGateMiddleware:
         self.app = app
         self.state = state
 
-    async def __call__(
-        self, scope: _Scope, receive: _Receive, send: _Send
-    ) -> None:
+    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
         # Only gate HTTP. Lifespan events must pass through so the server can
         # finish starting up and shutting down; websockets aren't used here
         # but we leave them un-gated for the same reason.

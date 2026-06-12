@@ -103,6 +103,7 @@ except ImportError:
     # Create stub types for type annotations
     class TracerProvider:
         """Stub TracerProvider used when the opentelemetry-sdk package is absent."""
+
         pass
 
     trace = type("trace", (), {"get_tracer": lambda name: _TracerStub()})()

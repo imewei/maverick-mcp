@@ -104,7 +104,10 @@ def test_health_check_module_does_not_import_renamed_data_database() -> None:
 
     offending: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "maverick_mcp.data.database":
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "maverick_mcp.data.database"
+        ):
             offending.append(f"line {node.lineno}: from {node.module} import ...")
         elif isinstance(node, ast.Import):
             for alias in node.names:

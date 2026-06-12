@@ -400,6 +400,7 @@ def _apply_middleware_as_decorators(server: FastMCP, middleware: MCPLoggingMiddl
 
     def logging_tool_decorator(*args, **kwargs):
         """Return a tool decorator that wraps execution with console-based logging."""
+
         def decorator(func):
             # Wrap the original tool function with logging
             @functools.wraps(func)

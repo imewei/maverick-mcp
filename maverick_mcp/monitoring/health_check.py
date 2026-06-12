@@ -117,9 +117,7 @@ class HealthChecker:
                 # was stringified into ``message`` but no traceback pointed at
                 # the offending import line. Keep the message-only copy in the
                 # ComponentHealth payload (it's what the readiness JSON shows).
-                logger.exception(
-                    "Health check failed for %s", component_name
-                )
+                logger.exception("Health check failed for %s", component_name)
                 component_results[component_name] = ComponentHealth(
                     name=component_name,
                     status=HealthStatus.UNHEALTHY,
